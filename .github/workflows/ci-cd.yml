@@ -4,6 +4,7 @@ name: Build and Deploy
 on:
   push:
     branches: [ main ]
+  workflow_dispatch
 
 env:
   IMAGE_NAME: ion-desafio-devops-app
@@ -33,10 +34,6 @@ jobs:
         context: .
         push: true
         tags: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-
-  deploy-to-kind:
-    needs: build-and-push
-    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
