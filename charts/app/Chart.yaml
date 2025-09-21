@@ -1,0 +1,5 @@
+apiVersion: v2
+name: ion-app
+description: A Helm chart for ION Desafio DevOps
+version: 0.1.0
+appVersion: "1.0.1"
