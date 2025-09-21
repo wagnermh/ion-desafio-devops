@@ -6,14 +6,14 @@ on:
     branches: [ main ]
 
 env:
-  IMAGE_NAME: ion-devops-app
+  IMAGE_NAME: ion-desafio-devops-app
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -41,24 +41,3 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Set up KIND
-      uses: engineerd/setup-kind@v0.6.0
-      with:
-        version: "v0.20.0"
-
-    - name: Create KIND cluster
-      run: |
-        kind create cluster --config kind-config.yaml
-
-    - name: Install Helm
-      run: |
-        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-        chmod 700 get_helm.sh
-        ./get_helm.sh
-
-    - name: Deploy application with Helm
-      run: |
-        helm upgrade --install my-app charts/app/ \
-          --set image.repository=${{ secrets.DOCKER_USERNAME }}/ion-devops-app \
-          --set image.tag=latest
