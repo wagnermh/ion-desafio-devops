@@ -8,6 +8,7 @@ Este projeto automatiza a criação de um cluster Kubernetes local usando KIND (
 - Docker instalado e rodando
 - Git
 - Bash
+- KIND
 
 ## 🛠️ Instalação Automática
 
@@ -86,15 +87,14 @@ kubectl logs <pod-name>
 
 
 ## 🔄 Fluxo de Desenvolvimento
-
 Desenvolver aplicação em src/
 
 Testar localmente: go run src/main.go
 
-Build da imagem: docker build -t seu-usuario/ion-desafio-devops-app .
+Build da imagem: docker build -t seu-usuario/ion-desafio-devops-app:1.0 .
 
-Push da imagem: docker push seu-usuario/ion-desafio-devops-app
+Push da imagem: docker push seu-usuario/ion-desafio-devops-app:1.0
 
-Deploy no KIND: helm upgrade ion-app charts/app/
+Deploy no KIND: helm install ion-app charts/app/
 
 Testar: curl http://ion-app.local
