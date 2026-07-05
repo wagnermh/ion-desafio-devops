@@ -34,19 +34,43 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
 
-      # ============================================
-      # SCAN DE SEGURANÇA COM TRIVY
-      # ============================================
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL'  # Opcional: filtra apenas CRITICAL e HIGH
-          # ignore-unfixed: true     # Opcional: ignora vulnerabilidades sem correção
+          severity: 'CRITICAL'
+
+      - name: Generate HTML report for Summary
+        run: |
+          echo "## 🔒 Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           
-      - name: Upload Trivy results as artifact (para download)
+          if [ -f "trivy-results.sarif" ]; then
+            CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
+            HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
+            MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
+            LOW=$(grep -o '"severity":"low"' trivy-results.sarif | wc -l || echo "0")
+            
+            echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
+            
+            TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Total vulnerabilities found:** $TOTAL" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| ⚠️ | No scan results available |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📎 **Download the full SARIF report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
+          
+      - name: Upload Trivy results as artifact
         uses: actions/upload-artifact@v4
         with:
           name: trivy-scan-results
