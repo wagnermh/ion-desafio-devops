@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ env.IMAGE_TAG }}
-      image_full: ${{ env.IMAGE_FULL }}
+      # 🔥 CORREÇÃO: Removido 'image_full' para evitar aviso
       image_exists: ${{ steps.check-image.outputs.exists }}
     steps:
       - name: 🔍 Checkout code
@@ -582,7 +582,7 @@ jobs:
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 6: RELATÓRIO FINAL COMPLETO (CORRIGIDO)
+  # JOB 6: RELATÓRIO FINAL COMPLETO
   # ================================================================
   final-report:
     needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, push-image]
