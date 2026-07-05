@@ -23,7 +23,7 @@ jobs:
       code_checked: ${{ steps.checkout.outcome }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
         id: checkout
 
       - name: 📂 List repository files
@@ -44,7 +44,7 @@ jobs:
       image_exists: ${{ steps.check-image.outputs.exists }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
 
       - name: 🏗️ Build Docker image locally
         run: |
@@ -60,7 +60,7 @@ jobs:
           ls -lh ${{ env.IMAGE_TAR }}
 
       - name: 📤 Upload image tar as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: docker-image-tar
           path: ${{ env.IMAGE_TAR }}
@@ -152,7 +152,7 @@ jobs:
           fi
 
       - name: 📤 Upload Trivy results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: trivy-scan-results
           path: trivy-results.sarif
@@ -228,7 +228,7 @@ jobs:
           fi
 
       - name: 📤 Upload Grype results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: grype-scan-results
           path: |
@@ -295,7 +295,7 @@ jobs:
           fi
 
       - name: 📤 Upload Syft results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: syft-sbom-results
           path: |
@@ -362,7 +362,7 @@ jobs:
           fi
 
       - name: 📤 Upload Dockle results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: dockle-results
           path: |
@@ -433,7 +433,7 @@ jobs:
           fi
 
       - name: 📤 Upload Snyk results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: snyk-results
           path: |
