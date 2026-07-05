@@ -1,5 +1,5 @@
 # Build stage
-FROM docker pull golang:1.24.13-alpine AS builder ##golang:1.24.2-alpine 
+FROM docker pull golang:1.24.13-alpine AS builder
 
 WORKDIR /app
 
