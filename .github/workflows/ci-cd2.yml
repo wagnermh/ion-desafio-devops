@@ -10,10 +10,11 @@ on:
 env:
   IMAGE_NAME: ion-desafio-devops-app
   REGISTRY: docker.io
+  GO_VERSION: '1.26'
 
 jobs:
   # ============================================
-  # JOB 1: TESTES (ADICIONADO)
+  # JOB 1: TESTES GOLANG
   # ============================================
   test:
     runs-on: ubuntu-latest
@@ -21,26 +22,39 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          node-version: '18'
-          cache: 'npm'
+          go-version: ${{ env.GO_VERSION }}
+          cache: true  # ✅ Cache automático para Go
 
-      - name: Install dependencies
-        run: npm ci || echo "npm ci failed, trying npm install..."
-        continue-on-error: true
+      - name: Download dependencies
+        run: go mod download
 
-      - name: Run tests
-        run: npm test || echo "No tests configured"
-        continue-on-error: true
+      - name: Run tests with coverage
+        run: |
+          go test -v -race -coverprofile=coverage.out ./...
+          go tool cover -html=coverage.out -o coverage.html
 
-      - name: Lint code
-        run: npm run lint || echo "No linter configured"
-        continue-on-error: true
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          args: --timeout=5m
+          skip-cache: false
+
+      - name: Build application
+        run: go build -v ./...
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.*
+          retention-days: 7
 
   # ============================================
-  # JOB 2: BUILD E PUSH
+  # JOB 2: BUILD E PUSH DA IMAGEM DOCKER
   # ============================================
   build-and-push:
     needs: test
@@ -69,6 +83,12 @@ jobs:
             type=raw,value=1.${{ github.run_number }}
             type=raw,value=latest
             type=sha,format=short
+            type=ref,event=branch
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE_NAME }}
+            org.opencontainers.image.description=Desafio DevOps - Golang Application
+            org.opencontainers.image.version=1.${{ github.run_number }}
+            org.opencontainers.image.revision=${{ github.sha }}
             
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -79,15 +99,59 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+            BUILD_NUMBER=${{ github.run_number }}
+            COMMIT_SHA=${{ github.sha }}
           
-      - name: Security scan
+      - name: Security scan with Trivy
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
           format: 'sarif'
           output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
           
-      - name: Upload scan results
+      - name: Upload scan results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Check image size
+        run: |
+          IMAGE_SIZE=$(docker image inspect ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} --format='{{.Size}}' | awk '{print int($1/1024/1024)" MB"}')
+          echo "📦 Image size: $IMAGE_SIZE"
+          
+          # Alerta se a imagem for muito grande (> 100MB para Go)
+          SIZE_BYTES=$(docker image inspect ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} --format='{{.Size}}')
+          if [ $SIZE_BYTES -gt 104857600 ]; then
+            echo "⚠️ WARNING: Image size exceeds 100MB. Consider optimizing your Dockerfile."
+          fi
+
+  # ============================================
+  # JOB 4: NOTIFICAÇÃO (OPCIONAL)
+  # ============================================
+  notify:
+    needs: [test, build-and-push]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Send status notification
+        run: |
+          STATUS="${{ needs.build-and-push.result }}"
+          if [ "$STATUS" == "success" ]; then
+            echo "✅ Pipeline completed successfully!"
+            echo "📦 Image: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}"
+          else
+            echo "❌ Pipeline failed!"
+            echo "Check the logs for details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          
+          echo "📊 Pipeline Summary:"
+          echo "--------------------"
+          echo "✅ Tests: ${{ needs.test.result }}"
+          echo "🏗️ Build: ${{ needs.build-and-push.result }}"
+          echo "🚀 Deploy: ${{ needs.deploy.result }}"
