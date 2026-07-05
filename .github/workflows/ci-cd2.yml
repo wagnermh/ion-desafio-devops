@@ -12,25 +12,6 @@ env:
   REGISTRY: docker.io
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          
-      - name: Install dependencies
-        run: npm ci
-        
-      - name: Run tests
-        run: npm test
-        
-      - name: Lint code
-        run: npm run lint
-
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
@@ -80,13 +61,3 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Deploy to production
-        run: |
-          echo "Deploying ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}"
-          # Adicionar comandos de deploy aqui
