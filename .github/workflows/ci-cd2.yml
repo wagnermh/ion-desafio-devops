@@ -7,127 +7,134 @@ on:
 
 env:
   IMAGE_NAME: ion-desafio-devops-app
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  IMAGE_TAG: 1.${{ github.run_number }}
+  IMAGE_FULL: ${{ secrets.DOCKER_USERNAME }}/ion-desafio-devops-app:1.${{ github.run_number }}
 
 jobs:
+  # ================================================================
+  # JOB 1: BUILD E PUSH DA IMAGEM
+  # ================================================================
   build-and-push:
     runs-on: ubuntu-latest
-    
+    outputs:
+      image_tag: ${{ env.IMAGE_TAG }}
+      image_full: ${{ env.IMAGE_FULL }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-          
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
 
-      # ============================================
+  # ================================================================
+  # JOB 2: SCANS DE SEGURANÇA
+  # ================================================================
+  security-scans:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      # --------------------------------------------------------------
       # 1. SCAN COM TRIVY
-      # ============================================
-      - name: Scan image with Trivy
+      # --------------------------------------------------------------
+      - name: Scan with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
+          image-ref: ${{ env.IMAGE_FULL }}
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL'
 
-      - name: Generate Trivy report for Summary
+      - name: Generate Trivy report
         run: |
           echo "## 🔒 Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          
           if [ -f "trivy-results.sarif" ]; then
             CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
             HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
             MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
             LOW=$(grep -o '"severity":"low"' trivy-results.sarif | wc -l || echo "0")
-            
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
-            
             TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Total vulnerabilities found:** $TOTAL" >> $GITHUB_STEP_SUMMARY
           else
             echo "| ⚠️ | No scan results available |" >> $GITHUB_STEP_SUMMARY
           fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📎 **Download the full SARIF report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload Trivy results as artifact
+      - name: Upload Trivy results
         uses: actions/upload-artifact@v4
         with:
           name: trivy-scan-results
           path: trivy-results.sarif
           retention-days: 7
 
-      # ============================================
+      # --------------------------------------------------------------
       # 2. SCAN COM GRYPE
-      # ============================================
+      # --------------------------------------------------------------
       - name: Install Grype
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
           grype version
 
-      - name: Scan image with Grype
+      - name: Scan with Grype
         run: |
-          grype ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o json > grype-results.json
-          grype ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o table > grype-results.txt
+          grype ${{ env.IMAGE_FULL }} -o json > grype-results.json
+          grype ${{ env.IMAGE_FULL }} -o table > grype-results.txt
 
-      - name: Generate Grype report for Summary
+      - name: Generate Grype report
         run: |
           echo "## 🔐 Grype Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          
           if [ -f "grype-results.json" ]; then
             CRITICAL=$(grep -o '"severity":"Critical"' grype-results.json | wc -l || echo "0")
             HIGH=$(grep -o '"severity":"High"' grype-results.json | wc -l || echo "0")
             MEDIUM=$(grep -o '"severity":"Medium"' grype-results.json | wc -l || echo "0")
             LOW=$(grep -o '"severity":"Low"' grype-results.json | wc -l || echo "0")
             NEGLIGIBLE=$(grep -o '"severity":"Negligible"' grype-results.json | wc -l || echo "0")
-            
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
             echo "| ⚪ **Negligible** | $NEGLIGIBLE |" >> $GITHUB_STEP_SUMMARY
-            
             TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW + NEGLIGIBLE))
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Total vulnerabilities found:** $TOTAL" >> $GITHUB_STEP_SUMMARY
           else
             echo "| ⚠️ | No scan results available |" >> $GITHUB_STEP_SUMMARY
           fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📎 **Download the full JSON report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
-          
           echo "📊 Grype Scan Summary (Table Format):"
           echo "========================================"
           cat grype-results.txt || echo "No table results available"
 
-      - name: Upload Grype results as artifact
+      - name: Upload Grype results
         uses: actions/upload-artifact@v4
         with:
           name: grype-scan-results
@@ -136,9 +143,9 @@ jobs:
             grype-results.txt
           retention-days: 7
 
-      # ============================================
+      # --------------------------------------------------------------
       # 3. SCAN COM SYFT (SBOM)
-      # ============================================
+      # --------------------------------------------------------------
       - name: Install Syft
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
@@ -146,22 +153,18 @@ jobs:
 
       - name: Generate SBOM with Syft
         run: |
-          syft ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o json > syft-sbom.json
-          syft ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o table > syft-sbom.txt
-          syft ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o cyclonedx-json > syft-sbom-cyclonedx.json
+          syft ${{ env.IMAGE_FULL }} -o json > syft-sbom.json
+          syft ${{ env.IMAGE_FULL }} -o table > syft-sbom.txt
+          syft ${{ env.IMAGE_FULL }} -o cyclonedx-json > syft-sbom-cyclonedx.json
 
-      - name: Generate Syft report for Summary
+      - name: Generate Syft report
         run: |
           echo "## 📦 Syft SBOM Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
           if [ -f "syft-sbom.json" ]; then
-            # Conta o número total de pacotes encontrados
             PACKAGES=$(grep -o '"name":' syft-sbom.json | wc -l || echo "0")
             echo "**Total packages discovered:** $PACKAGES" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            
-            # Mostra os 10 principais pacotes
             echo "**Top 10 packages:**" >> $GITHUB_STEP_SUMMARY
             echo "| Package | Version | Type |" >> $GITHUB_STEP_SUMMARY
             echo "|---------|---------|------|" >> $GITHUB_STEP_SUMMARY
@@ -174,15 +177,13 @@ jobs:
           else
             echo "⚠️ No SBOM results available" >> $GITHUB_STEP_SUMMARY
           fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📎 **Download the SBOM files** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
-          
           echo "📦 Syft SBOM Summary:"
           echo "========================================"
           head -20 syft-sbom.txt || echo "No SBOM results available"
 
-      - name: Upload Syft results as artifact
+      - name: Upload Syft results
         uses: actions/upload-artifact@v4
         with:
           name: syft-sbom-results
@@ -192,53 +193,42 @@ jobs:
             syft-sbom-cyclonedx.json
           retention-days: 7
 
-      # ============================================
-      # 4. SCAN COM DOCKLE (Dockerfile Best Practices)
-      # ============================================
+      # --------------------------------------------------------------
+      # 4. SCAN COM DOCKLE (Best Practices)
+      # --------------------------------------------------------------
       - name: Install Dockle
         run: |
-          # Obtém a versão mais recente diretamente da API do GitHub
           VERSION=$(curl --silent "https://api.github.com/repos/goodwithtech/dockle/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-          # Constrói o link de download com a versão encontrada
           curl -sSfL -o dockle.deb "https://github.com/goodwithtech/dockle/releases/download/v${VERSION}/dockle_${VERSION}_Linux-64bit.deb"
-          # Instala o pacote e limpa o arquivo baixado
           sudo dpkg -i dockle.deb > /dev/null 2>&1
           sudo apt-get install -f -y > /dev/null 2>&1
           rm -f dockle.deb
-          # Verifica a instalação
           dockle --version
 
-      - name: Scan image with Dockle
+      - name: Scan with Dockle
         run: |
-          dockle -f json ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} > dockle-results.json
-          dockle ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} > dockle-results.txt
-          dockle --exit-code 0 ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
+          dockle -f json ${{ env.IMAGE_FULL }} > dockle-results.json
+          dockle ${{ env.IMAGE_FULL }} > dockle-results.txt
+          dockle --exit-code 0 ${{ env.IMAGE_FULL }}
 
-      - name: Generate Dockle report for Summary
+      - name: Generate Dockle report
         run: |
           echo "## 🛡️ Dockle Best Practices Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Dockle checks for Dockerfile best practices and security issues." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
           if [ -f "dockle-results.json" ]; then
-            # Conta o número de problemas encontrados
             TOTAL_ISSUES=$(grep -o '"level":' dockle-results.json | wc -l || echo "0")
             echo "**Total issues found:** $TOTAL_ISSUES" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            
-            # Conta por severidade
             FATAL=$(grep -o '"level":"FATAL"' dockle-results.json | wc -l || echo "0")
             WARN=$(grep -o '"level":"WARN"' dockle-results.json | wc -l || echo "0")
             INFO=$(grep -o '"level":"INFO"' dockle-results.json | wc -l || echo "0")
-            
             echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| 🔴 **Fatal** | $FATAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Warn** | $WARN |" >> $GITHUB_STEP_SUMMARY
             echo "| 🔵 **Info** | $INFO |" >> $GITHUB_STEP_SUMMARY
-            
-            # Mostra os principais problemas
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Top issues found:**" >> $GITHUB_STEP_SUMMARY
             echo "| Issue | Severity |" >> $GITHUB_STEP_SUMMARY
@@ -251,15 +241,13 @@ jobs:
           else
             echo "✅ No issues found! Your Dockerfile follows best practices." >> $GITHUB_STEP_SUMMARY
           fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📎 **Download the full Dockle report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
-          
           echo "📊 Dockle Scan Summary:"
           echo "========================================"
           cat dockle-results.txt || echo "No Dockle results available"
 
-      - name: Upload Dockle results as artifact
+      - name: Upload Dockle results
         uses: actions/upload-artifact@v4
         with:
           name: dockle-results
@@ -268,9 +256,9 @@ jobs:
             dockle-results.txt
           retention-days: 7
 
-      # ============================================
+      # --------------------------------------------------------------
       # 5. SCAN COM SNYK
-      # ============================================
+      # --------------------------------------------------------------
       - name: Install Snyk
         run: |
           curl -sSfL https://static.snyk.io/cli/latest/snyk-linux -o snyk
@@ -278,41 +266,36 @@ jobs:
           sudo mv snyk /usr/local/bin/
           snyk --version
 
-      - name: Scan image with Snyk
+      - name: Scan with Snyk
         run: |
-          snyk container test ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} --json > snyk-results.json || true
-          snyk container test ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} --sarif > snyk-results.sarif || true
+          snyk container test ${{ env.IMAGE_FULL }} --json > snyk-results.json || true
+          snyk container test ${{ env.IMAGE_FULL }} --sarif > snyk-results.sarif || true
 
-      - name: Generate Snyk report for Summary
+      - name: Generate Snyk report
         run: |
           echo "## 🚀 Snyk Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          
           if [ -f "snyk-results.json" ]; then
-            # Extrai contagens do JSON do Snyk
             CRITICAL=$(grep -o '"severity":"critical"' snyk-results.json | wc -l || echo "0")
             HIGH=$(grep -o '"severity":"high"' snyk-results.json | wc -l || echo "0")
             MEDIUM=$(grep -o '"severity":"medium"' snyk-results.json | wc -l || echo "0")
             LOW=$(grep -o '"severity":"low"' snyk-results.json | wc -l || echo "0")
-            
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
-            
             TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Total vulnerabilities found:** $TOTAL" >> $GITHUB_STEP_SUMMARY
           else
             echo "| ⚠️ | No scan results available |" >> $GITHUB_STEP_SUMMARY
           fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📎 **Download the full Snyk report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload Snyk results as artifact
+      - name: Upload Snyk results
         uses: actions/upload-artifact@v4
         with:
           name: snyk-results
@@ -321,50 +304,19 @@ jobs:
             snyk-results.sarif
           retention-days: 7
 
-      # ============================================
-      # RESUMO FINAL
-      # ============================================
+      # --------------------------------------------------------------
+      # RESUMO FINAL DOS SCANS
+      # --------------------------------------------------------------
       - name: Generate Complete Security Summary
         run: |
           echo "# 🛡️ Complete Security Scan Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Tool | Purpose | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|------|---------|--------|" >> $GITHUB_STEP_SUMMARY
-          
-          # Trivy
-          if [ -f "trivy-results.sarif" ]; then
-            echo "| **Trivy** | Vulnerability Scanner | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **Trivy** | Vulnerability Scanner | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Grype
-          if [ -f "grype-results.json" ]; then
-            echo "| **Grype** | Vulnerability Scanner | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **Grype** | Vulnerability Scanner | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Syft
-          if [ -f "syft-sbom.json" ]; then
-            echo "| **Syft** | SBOM Generation | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **Syft** | SBOM Generation | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Dockle
-          if [ -f "dockle-results.json" ]; then
-            echo "| **Dockle** | Best Practices | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **Dockle** | Best Practices | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Snyk
-          if [ -f "snyk-results.json" ]; then
-            echo "| **Snyk** | Vulnerability Scanner | ✅ Completed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **Snyk** | Vulnerability Scanner | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
+          [ -f "trivy-results.sarif" ] && echo "| **Trivy** | Vulnerability Scanner | ✅ Completed |" >> $GITHUB_STEP_SUMMARY || echo "| **Trivy** | Vulnerability Scanner | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          [ -f "grype-results.json" ] && echo "| **Grype** | Vulnerability Scanner | ✅ Completed |" >> $GITHUB_STEP_SUMMARY || echo "| **Grype** | Vulnerability Scanner | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          [ -f "syft-sbom.json" ] && echo "| **Syft** | SBOM Generation | ✅ Completed |" >> $GITHUB_STEP_SUMMARY || echo "| **Syft** | SBOM Generation | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          [ -f "dockle-results.json" ] && echo "| **Dockle** | Best Practices | ✅ Completed |" >> $GITHUB_STEP_SUMMARY || echo "| **Dockle** | Best Practices | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          [ -f "snyk-results.json" ] && echo "| **Snyk** | Vulnerability Scanner | ✅ Completed |" >> $GITHUB_STEP_SUMMARY || echo "| **Snyk** | Vulnerability Scanner | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📋 **All artifacts are available for download below.**" >> $GITHUB_STEP_SUMMARY
