@@ -23,7 +23,7 @@ jobs:
       code_checked: ${{ steps.checkout.outcome }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v4
         id: checkout
 
       - name: 📂 List repository files
@@ -40,11 +40,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ env.IMAGE_TAG }}
-      # 🔥 CORREÇÃO: Removido 'image_full' para evitar aviso
       image_exists: ${{ steps.check-image.outputs.exists }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v4
 
       - name: 🏗️ Build Docker image locally
         run: |
@@ -60,7 +59,7 @@ jobs:
           ls -lh ${{ env.IMAGE_TAR }}
 
       - name: 📤 Upload image tar as artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: docker-image-tar
           path: ${{ env.IMAGE_TAR }}
@@ -112,9 +111,10 @@ jobs:
       status: ${{ steps.check.outputs.status }}
       critical: ${{ steps.check.outputs.critical }}
       high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -131,7 +131,7 @@ jobs:
           image-ref: ${{ env.IMAGE_FULL }}
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: 📊 Generate Trivy report
         run: |
@@ -152,7 +152,7 @@ jobs:
           fi
 
       - name: 📤 Upload Trivy results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: trivy-scan-results
           path: trivy-results.sarif
@@ -164,19 +164,25 @@ jobs:
           if [ ! -f "trivy-results.sarif" ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
             echo "❌ Scan failed - no results file"
             exit 0
           fi
           CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
           HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
+          MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           echo "high=$HIGH" >> $GITHUB_OUTPUT
-          if [ "$CRITICAL" -gt 0 ]; then
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          # 🔥 BARRAR: CRITICAL, HIGH e MEDIUM
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Found $CRITICAL CRITICAL vulnerabilities!"
+            echo "❌ Found $CRITICAL CRITICAL, $HIGH HIGH and $MEDIUM MEDIUM vulnerabilities!"
           else
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "✅ No CRITICAL vulnerabilities found"
+            echo "✅ No CRITICAL, HIGH or MEDIUM vulnerabilities found"
           fi
 
   # ---------- SCAN 2: GRYPE ----------
@@ -186,9 +192,11 @@ jobs:
     outputs:
       status: ${{ steps.check.outputs.status }}
       critical: ${{ steps.check.outputs.critical }}
+      high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -228,7 +236,7 @@ jobs:
           fi
 
       - name: 📤 Upload Grype results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: grype-scan-results
           path: |
@@ -242,17 +250,25 @@ jobs:
           if [ ! -f "grype-results.json" ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
             echo "❌ Scan failed - no results file"
             exit 0
           fi
           CRITICAL=$(grep -o '"severity":"Critical"' grype-results.json | wc -l || echo "0")
+          HIGH=$(grep -o '"severity":"High"' grype-results.json | wc -l || echo "0")
+          MEDIUM=$(grep -o '"severity":"Medium"' grype-results.json | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
-          if [ "$CRITICAL" -gt 0 ]; then
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          # 🔥 BARRAR: CRITICAL, HIGH e MEDIUM
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Found $CRITICAL CRITICAL vulnerabilities!"
+            echo "❌ Found $CRITICAL CRITICAL, $HIGH HIGH and $MEDIUM MEDIUM vulnerabilities!"
           else
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "✅ No CRITICAL vulnerabilities found"
+            echo "✅ No CRITICAL, HIGH or MEDIUM vulnerabilities found"
           fi
 
   # ---------- SCAN 3: SYFT (SBOM) ----------
@@ -263,7 +279,7 @@ jobs:
       status: ${{ steps.check.outputs.status }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -295,7 +311,7 @@ jobs:
           fi
 
       - name: 📤 Upload Syft results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: syft-sbom-results
           path: |
@@ -323,7 +339,7 @@ jobs:
       status: ${{ steps.check.outputs.status }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -362,7 +378,7 @@ jobs:
           fi
 
       - name: 📤 Upload Dockle results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: dockle-results
           path: |
@@ -394,9 +410,11 @@ jobs:
     outputs:
       status: ${{ steps.check.outputs.status }}
       critical: ${{ steps.check.outputs.critical }}
+      high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -428,12 +446,14 @@ jobs:
           if [ -f "snyk-results.json" ]; then
             CRITICAL=$(grep -o '"severity":"critical"' snyk-results.json | wc -l || echo "0")
             HIGH=$(grep -o '"severity":"high"' snyk-results.json | wc -l || echo "0")
+            MEDIUM=$(grep -o '"severity":"medium"' snyk-results.json | wc -l || echo "0")
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: 📤 Upload Snyk results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: snyk-results
           path: |
@@ -447,17 +467,25 @@ jobs:
           if [ ! -f "snyk-results.json" ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
             echo "❌ Scan failed - no results file"
             exit 0
           fi
           CRITICAL=$(grep -o '"severity":"critical"' snyk-results.json | wc -l || echo "0")
+          HIGH=$(grep -o '"severity":"high"' snyk-results.json | wc -l || echo "0")
+          MEDIUM=$(grep -o '"severity":"medium"' snyk-results.json | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
-          if [ "$CRITICAL" -gt 0 ]; then
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          # 🔥 BARRAR: CRITICAL, HIGH e MEDIUM
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Found $CRITICAL CRITICAL vulnerabilities!"
+            echo "❌ Found $CRITICAL CRITICAL, $HIGH HIGH and $MEDIUM MEDIUM vulnerabilities!"
           else
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "✅ No CRITICAL vulnerabilities found"
+            echo "✅ No CRITICAL, HIGH or MEDIUM vulnerabilities found"
           fi
 
   # ================================================================
@@ -475,48 +503,48 @@ jobs:
         run: |
           echo "## 🔍 Security Scans Validation" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Tool | Status | Critical Issues |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|-----------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Status | Critical | High | Medium |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|----------|------|--------|" >> $GITHUB_STEP_SUMMARY
           
           FAILED=0
           
           # Trivy
           if [ "${{ needs.trivy-scan.outputs.status }}" == "passed" ]; then
-            echo "| **Trivy** | ✅ Passed | ${{ needs.trivy-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Trivy** | ✅ Passed | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **Trivy** | ❌ Failed | ${{ needs.trivy-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Trivy** | ❌ Failed | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
             FAILED=$((FAILED + 1))
           fi
           
           # Grype
           if [ "${{ needs.grype-scan.outputs.status }}" == "passed" ]; then
-            echo "| **Grype** | ✅ Passed | ${{ needs.grype-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Grype** | ✅ Passed | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **Grype** | ❌ Failed | ${{ needs.grype-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Grype** | ❌ Failed | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
             FAILED=$((FAILED + 1))
           fi
           
           # Syft
           if [ "${{ needs.syft-scan.outputs.status }}" == "passed" ]; then
-            echo "| **Syft** | ✅ Passed | - |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Syft** | ✅ Passed | - | - | - |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **Syft** | ❌ Failed | - |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Syft** | ❌ Failed | - | - | - |" >> $GITHUB_STEP_SUMMARY
             FAILED=$((FAILED + 1))
           fi
           
           # Dockle
           if [ "${{ needs.dockle-scan.outputs.status }}" == "passed" ]; then
-            echo "| **Dockle** | ✅ Passed | - |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Dockle** | ✅ Passed | - | - | - |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **Dockle** | ❌ Failed | - |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Dockle** | ❌ Failed | - | - | - |" >> $GITHUB_STEP_SUMMARY
             FAILED=$((FAILED + 1))
           fi
           
           # Snyk
           if [ "${{ needs.snyk-scan.outputs.status }}" == "passed" ]; then
-            echo "| **Snyk** | ✅ Passed | ${{ needs.snyk-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Snyk** | ✅ Passed | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **Snyk** | ❌ Failed | ${{ needs.snyk-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Snyk** | ❌ Failed | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
             FAILED=$((FAILED + 1))
           fi
           
@@ -538,7 +566,7 @@ jobs:
     if: needs.validate-scans.outputs.scan_status == 'passed'
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -551,7 +579,7 @@ jobs:
           docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
 
       - name: 🔑 Login to Docker Hub
-        uses: docker/login-action@v4.4.0
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -646,11 +674,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🔒 Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Tool | Critical | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Critical | High | Medium | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|----------|------|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
