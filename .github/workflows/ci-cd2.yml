@@ -11,6 +11,7 @@ env:
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   IMAGE_TAG: 1.${{ github.run_number }}
   IMAGE_FULL: ${{ secrets.DOCKER_USERNAME }}/ion-desafio-devops-app:1.${{ github.run_number }}
+  IMAGE_TAR: /tmp/image.tar
 
 jobs:
   # ================================================================
@@ -22,7 +23,7 @@ jobs:
       code_checked: ${{ steps.checkout.outcome }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
         id: checkout
 
       - name: 📂 List repository files
@@ -32,7 +33,7 @@ jobs:
           echo "✅ Code checked out successfully"
 
   # ================================================================
-  # JOB 2: BUILD DA IMAGEM (LOCALMENTE, SEM PUSH)
+  # JOB 2: BUILD DA IMAGEM (LOCALMENTE + SAVE TAR)
   # ================================================================
   build-image:
     needs: checkout-code
@@ -43,20 +44,26 @@ jobs:
       image_exists: ${{ steps.check-image.outputs.exists }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
 
-      - name: 🐳 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: 🏗️ Build Docker image locally
+        run: |
+          echo "📦 Building image: ${{ env.IMAGE_FULL }}"
+          docker build -t ${{ env.IMAGE_FULL }} .
+          docker tag ${{ env.IMAGE_FULL }} ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
 
-      - name: 🏗️ Build Docker image (local only)
-        uses: docker/build-push-action@v5
+      - name: 💾 Save image to tar file
+        run: |
+          echo "💾 Saving image to ${{ env.IMAGE_TAR }}"
+          docker save ${{ env.IMAGE_FULL }} -o ${{ env.IMAGE_TAR }}
+          ls -lh ${{ env.IMAGE_TAR }}
+
+      - name: 📤 Upload image tar as artifact
+        uses: actions/upload-artifact@v7.0.1
         with:
-          context: .
-          push: false                    # 🔥 NÃO faz push para registry
-          load: true                     # 🔥 Carrega a imagem localmente
-          tags: |
-            ${{ env.IMAGE_FULL }}
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          name: docker-image-tar
+          path: ${{ env.IMAGE_TAR }}
+          retention-days: 1
 
       - name: 🔍 Verify image exists locally
         id: check-image
@@ -99,6 +106,18 @@ jobs:
       critical: ${{ steps.check.outputs.critical }}
       high: ${{ steps.check.outputs.high }}
     steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
       - name: 🔒 Scan with Trivy
         uses: aquasecurity/trivy-action@master
         with:
@@ -126,7 +145,7 @@ jobs:
           fi
 
       - name: 📤 Upload Trivy results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: trivy-scan-results
           path: trivy-results.sarif
@@ -161,6 +180,18 @@ jobs:
       status: ${{ steps.check.outputs.status }}
       critical: ${{ steps.check.outputs.critical }}
     steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
       - name: 📦 Install Grype
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
@@ -190,7 +221,7 @@ jobs:
           fi
 
       - name: 📤 Upload Grype results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: grype-scan-results
           path: |
@@ -224,6 +255,18 @@ jobs:
     outputs:
       status: ${{ steps.check.outputs.status }}
     steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
       - name: 📦 Install Syft
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
@@ -245,7 +288,7 @@ jobs:
           fi
 
       - name: 📤 Upload Syft results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: syft-sbom-results
           path: |
@@ -272,6 +315,18 @@ jobs:
     outputs:
       status: ${{ steps.check.outputs.status }}
     steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
       - name: 📦 Install Dockle
         run: |
           VERSION=$(curl --silent "https://api.github.com/repos/goodwithtech/dockle/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -300,7 +355,7 @@ jobs:
           fi
 
       - name: 📤 Upload Dockle results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: dockle-results
           path: |
@@ -333,6 +388,18 @@ jobs:
       status: ${{ steps.check.outputs.status }}
       critical: ${{ steps.check.outputs.critical }}
     steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
       - name: 📦 Install Snyk
         run: |
           curl -sSfL https://static.snyk.io/cli/latest/snyk-linux -o snyk
@@ -359,7 +426,7 @@ jobs:
           fi
 
       - name: 📤 Upload Snyk results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: snyk-results
           path: |
@@ -463,6 +530,18 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.validate-scans.outputs.scan_status == 'passed'
     steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v3.1.0
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
       - name: 🔑 Login to Docker Hub
         uses: docker/login-action@v3
         with:
