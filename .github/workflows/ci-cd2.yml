@@ -197,8 +197,15 @@ jobs:
       # ============================================
       - name: Install Dockle
         run: |
-          curl -L -o dockle.deb curl -s https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-64bit.deb
-          sudo dpkg -i dockle.deb
+          # Obtém a versão mais recente diretamente da API do GitHub
+          VERSION=$(curl --silent "https://api.github.com/repos/goodwithtech/dockle/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          # Constrói o link de download com a versão encontrada
+          curl -sSfL -o dockle.deb "https://github.com/goodwithtech/dockle/releases/download/v${VERSION}/dockle_${VERSION}_Linux-64bit.deb"
+          # Instala o pacote e limpa o arquivo baixado
+          sudo dpkg -i dockle.deb > /dev/null 2>&1
+          sudo apt-get install -f -y > /dev/null 2>&1
+          rm -f dockle.deb
+          # Verifica a instalação
           dockle --version
 
       - name: Scan image with Dockle
