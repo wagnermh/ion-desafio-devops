@@ -1,19 +1,19 @@
 # .github/workflows/ci-cd.yml
 name: Build and Deploy
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+#on:
+#  push:
+#    branches: [ main ]
+#  workflow_dispatch:
 
 env:
   IMAGE_NAME: ion-desafio-devops-app
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+#jobs:
+#  build-and-push:
+#    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
