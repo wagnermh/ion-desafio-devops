@@ -197,7 +197,7 @@ jobs:
       # ============================================
       - name: Install Dockle
         run: |
-          curl -L -o dockle.deb curl -s https://api.github.com/repos/goodwithtech/dockle/releases/latest | grep "browser_download_url.*Linux-64bit.deb" | cut -d '"' -f 4 | wget -qi -
+          curl -L -o dockle.deb curl -s https://github.com/goodwithtech/dockle/releases/download/v0.4.15/dockle_0.4.15_Linux-64bit.deb
           sudo dpkg -i dockle.deb
           dockle --version
 
