@@ -582,7 +582,7 @@ jobs:
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 6: RELATÓRIO FINAL COMPLETO
+  # JOB 6: RELATÓRIO FINAL COMPLETO (CORRIGIDO)
   # ================================================================
   final-report:
     needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, push-image]
@@ -600,4 +600,61 @@ jobs:
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           
           # Checkout
-          if
+          if [ "${{ needs.checkout-code.result }}" == "success" ]; then
+            echo "| **1. Checkout Code** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **1. Checkout Code** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Build
+          if [ "${{ needs.build-image.result }}" == "success" ]; then
+            echo "| **2. Build Image** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **2. Build Image** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Scans
+          echo "| **3a. Trivy Scan** | ${{ needs.trivy-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3b. Grype Scan** | ${{ needs.grype-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3c. Syft SBOM** | ${{ needs.syft-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3d. Dockle Scan** | ${{ needs.dockle-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3e. Snyk Scan** | ${{ needs.snyk-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Validation
+          if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
+            echo "| **4. Security Validation** | ✅ All Passed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **4. Security Validation** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Push
+          if [ "${{ needs.push-image.result }}" == "success" ]; then
+            echo "| **5. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
+            echo "| **5. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **5. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Image Information" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Vulnerability summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔒 Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Critical | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
+            echo "✅ **Image approved and pushed to registry successfully!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Image NOT pushed due to security scan failures.**" >> $GITHUB_STEP_SUMMARY
+          fi
