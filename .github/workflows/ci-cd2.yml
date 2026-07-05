@@ -49,13 +49,14 @@ jobs:
       - name: 🏗️ Build Docker image locally
         run: |
           echo "📦 Building image: ${{ env.IMAGE_FULL }}"
-          docker build -t ${{ env.IMAGE_FULL }} .
-          docker tag ${{ env.IMAGE_FULL }} ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          docker build -t ${{ env.IMAGE_FULL }} -t ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest .
+          echo "✅ Image built with tags:"
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
 
       - name: 💾 Save image to tar file
         run: |
           echo "💾 Saving image to ${{ env.IMAGE_TAR }}"
-          docker save ${{ env.IMAGE_FULL }} -o ${{ env.IMAGE_TAR }}
+          docker save ${{ env.IMAGE_FULL }} ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest -o ${{ env.IMAGE_TAR }}
           ls -lh ${{ env.IMAGE_TAR }}
 
       - name: 📤 Upload image tar as artifact
@@ -68,19 +69,24 @@ jobs:
       - name: 🔍 Verify image exists locally
         id: check-image
         run: |
-          echo "🔍 Checking if image exists locally..."
+          echo "🔍 Checking if images exist locally..."
           if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "${{ env.IMAGE_FULL }}"; then
             echo "✅ Image found: ${{ env.IMAGE_FULL }}"
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "📦 Image size:"
-            docker images ${{ env.IMAGE_FULL }} --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}"
           else
             echo "❌ Image not found locally!"
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "📋 Available images:"
-            docker images
             exit 1
           fi
+          
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"; then
+            echo "✅ Image found: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+          else
+            echo "❌ Warning: latest tag not found locally!"
+          fi
+          
+          echo "📦 Available images:"
+          docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep "${{ env.IMAGE_NAME }}"
 
       - name: 📊 Generate build report
         run: |
@@ -91,6 +97,7 @@ jobs:
           echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
           echo "| **Status** | ✅ Built locally |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
@@ -540,7 +547,8 @@ jobs:
         run: |
           echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
           docker load -i ${{ env.IMAGE_TAR }}
-          docker images
+          echo "📦 Images loaded:"
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
 
       - name: 🔑 Login to Docker Hub
         uses: docker/login-action@v3
@@ -553,8 +561,11 @@ jobs:
           echo "📦 Pushing image: ${{ env.IMAGE_FULL }}"
           echo "🔐 Image approved by security scans!"
           docker push ${{ env.IMAGE_FULL }}
+          
+          echo "📦 Pushing image: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
           docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-          echo "✅ Image pushed successfully!"
+          
+          echo "✅ Images pushed successfully!"
 
       - name: 📊 Generate push report
         run: |
@@ -565,6 +576,7 @@ jobs:
           echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
           echo "| **Registry** | Docker Hub |" >> $GITHUB_STEP_SUMMARY
           echo "| **Security Status** | ✅ All scans passed |" >> $GITHUB_STEP_SUMMARY
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
@@ -588,61 +600,4 @@ jobs:
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           
           # Checkout
-          if [ "${{ needs.checkout-code.result }}" == "success" ]; then
-            echo "| **1. Checkout Code** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **1. Checkout Code** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Build
-          if [ "${{ needs.build-image.result }}" == "success" ]; then
-            echo "| **2. Build Image** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **2. Build Image** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Scans
-          echo "| **3a. Trivy Scan** | ${{ needs.trivy-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **3b. Grype Scan** | ${{ needs.grype-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **3c. Syft SBOM** | ${{ needs.syft-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **3d. Dockle Scan** | ${{ needs.dockle-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **3e. Snyk Scan** | ${{ needs.snyk-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          
-          # Validation
-          if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
-            echo "| **4. Security Validation** | ✅ All Passed |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **4. Security Validation** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Push
-          if [ "${{ needs.push-image.result }}" == "success" ]; then
-            echo "| **5. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
-            echo "| **5. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **5. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 Image Information" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
-          
-          # Vulnerability summary
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🔒 Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Tool | Critical | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
-            echo "✅ **Image approved and pushed to registry successfully!**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Image NOT pushed due to security scan failures.**" >> $GITHUB_STEP_SUMMARY
-          fi
+          if
