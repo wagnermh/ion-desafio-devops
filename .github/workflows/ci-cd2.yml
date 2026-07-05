@@ -35,7 +35,7 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
 
       # ============================================
-      # SCAN COM TRIVY
+      # TRIVY SCAN
       # ============================================
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -45,9 +45,9 @@ jobs:
           output: 'trivy-results.sarif'
           severity: 'CRITICAL'
 
-      - name: Generate Trivy report for Summary
+      - name: Generate Trivy report
         run: |
-          echo "## 🔒 Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔒 Trivy Security Scan" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
@@ -62,26 +62,18 @@ jobs:
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
-            
-            TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW))
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Total vulnerabilities found:** $TOTAL" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| ⚠️ | No scan results available |" >> $GITHUB_STEP_SUMMARY
+            echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
           fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📎 **Download the full SARIF report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload Trivy results as artifact
+      - name: Upload Trivy results
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-scan-results
+          name: trivy-results
           path: trivy-results.sarif
           retention-days: 7
 
       # ============================================
-      # SCAN COM GRYPE
+      # GRYPE SCAN
       # ============================================
       - name: Install Grype
         run: |
@@ -93,47 +85,53 @@ jobs:
           grype ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o json > grype-results.json
           grype ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o table > grype-results.txt
 
-      - name: Generate Grype report for Summary
+      - name: Generate Grype report
         run: |
-          echo "## 🔐 Grype Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔐 Grype Security Scan" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           
           if [ -f "grype-results.json" ]; then
-            # Extrai contagens do JSON do Grype
             CRITICAL=$(grep -o '"severity":"Critical"' grype-results.json | wc -l || echo "0")
             HIGH=$(grep -o '"severity":"High"' grype-results.json | wc -l || echo "0")
             MEDIUM=$(grep -o '"severity":"Medium"' grype-results.json | wc -l || echo "0")
             LOW=$(grep -o '"severity":"Low"' grype-results.json | wc -l || echo "0")
-            NEGLIGIBLE=$(grep -o '"severity":"Negligible"' grype-results.json | wc -l || echo "0")
             
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
-            echo "| ⚪ **Negligible** | $NEGLIGIBLE |" >> $GITHUB_STEP_SUMMARY
-            
-            TOTAL=$((CRITICAL + HIGH + MEDIUM + LOW + NEGLIGIBLE))
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Total vulnerabilities found:** $TOTAL" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| ⚠️ | No scan results available |" >> $GITHUB_STEP_SUMMARY
+            echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
           fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📎 **Download the full JSON report** from the Artifacts section below." >> $GITHUB_STEP_SUMMARY
-          
-          # Mostra o relatório em tabela no log
-          echo "📊 Grype Scan Summary (Table Format):"
-          echo "========================================"
-          cat grype-results.txt || echo "No table results available"
 
-      - name: Upload Grype results as artifact
+      - name: Show Grype summary in logs
+        run: |
+          echo "📊 Grype Scan Results:"
+          echo "========================================"
+          cat grype-results.txt
+          echo "========================================"
+
+      - name: Upload Grype results
         uses: actions/upload-artifact@v4
         with:
-          name: grype-scan-results
+          name: grype-results
           path: |
             grype-results.json
             grype-results.txt
+          retention-days: 7
+
+      # ============================================
+      # GERAR SBOM COM GRYPE (OPCIONAL)
+      # ============================================
+      - name: Generate SBOM with Grype
+        run: |
+          grype ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }} -o syft-json > sbom.json
+          
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
           retention-days: 7
