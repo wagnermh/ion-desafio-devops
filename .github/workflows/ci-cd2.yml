@@ -14,13 +14,14 @@ env:
 
 jobs:
   # ================================================================
-  # JOB 1: BUILD DA IMAGEM (SEM PUSH)
+  # JOB 1: BUILD DA IMAGEM (COM LOAD E OUTPUTS)
   # ================================================================
   build-image:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ env.IMAGE_TAG }}
       image_full: ${{ env.IMAGE_FULL }}
+      image_exists: ${{ steps.check-image.outputs.exists }}
     steps:
       - name: 🔍 Checkout code
         uses: actions/checkout@v4
@@ -28,20 +29,27 @@ jobs:
       - name: 🐳 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 🏗️ Build Docker image
+      - name: 🏗️ Build and load Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          load: true
+          load: true  # 🔥 IMPORTANTE: Carrega a imagem localmente
           tags: |
             ${{ env.IMAGE_FULL }}
             ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
 
-      - name: ✅ Image built successfully
+      - name: ✅ Verify image exists locally
+        id: check-image
         run: |
-          echo "📦 Image built: ${{ env.IMAGE_FULL }}"
-          docker images | grep ${{ env.IMAGE_NAME }}
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "${{ env.IMAGE_FULL }}"; then
+            echo "✅ Image found: ${{ env.IMAGE_FULL }}"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Image not found locally!"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
   # ================================================================
   # JOB 2: SCANS DE SEGURANÇA (EXECUTADOS EM PARALELO)
@@ -80,8 +88,6 @@ jobs:
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
             echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
-            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
-            echo "high=$HIGH" >> $GITHUB_OUTPUT
           fi
 
       - name: 📤 Upload Trivy results
@@ -94,6 +100,12 @@ jobs:
       - name: ✅ Check scan status
         id: check
         run: |
+          if [ ! -f "trivy-results.sarif" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
           CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
           HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
@@ -140,7 +152,6 @@ jobs:
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
             echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
-            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           fi
 
       - name: 📤 Upload Grype results
@@ -155,6 +166,12 @@ jobs:
       - name: ✅ Check scan status
         id: check
         run: |
+          if [ ! -f "grype-results.json" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
           CRITICAL=$(grep -o '"severity":"Critical"' grype-results.json | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           if [ "$CRITICAL" -gt 0 ]; then
@@ -169,6 +186,8 @@ jobs:
   syft-scan:
     needs: build-image
     runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
     steps:
       - name: 📦 Install Syft
         run: |
@@ -199,6 +218,17 @@ jobs:
             syft-sbom.txt
             syft-sbom-cyclonedx.json
           retention-days: 7
+
+      - name: ✅ Check scan status
+        id: check
+        run: |
+          if [ -f "syft-sbom.json" ]; then
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ SBOM generated successfully"
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ SBOM generation failed"
+          fi
 
   # ---------- SCAN 4: DOCKLE ----------
   dockle-scan:
@@ -232,7 +262,6 @@ jobs:
             echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| 🔴 **Fatal** | $FATAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Warn** | $WARN |" >> $GITHUB_STEP_SUMMARY
-            echo "fatal=$FATAL" >> $GITHUB_OUTPUT
           fi
 
       - name: 📤 Upload Dockle results
@@ -247,6 +276,11 @@ jobs:
       - name: ✅ Check scan status
         id: check
         run: |
+          if [ ! -f "dockle-results.json" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
           FATAL=$(grep -o '"level":"FATAL"' dockle-results.json | wc -l || echo "0")
           if [ "$FATAL" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -287,7 +321,6 @@ jobs:
             HIGH=$(grep -o '"severity":"high"' snyk-results.json | wc -l || echo "0")
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
-            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           fi
 
       - name: 📤 Upload Snyk results
@@ -302,6 +335,12 @@ jobs:
       - name: ✅ Check scan status
         id: check
         run: |
+          if [ ! -f "snyk-results.json" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
           CRITICAL=$(grep -o '"severity":"critical"' snyk-results.json | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           if [ "$CRITICAL" -gt 0 ]; then
@@ -313,16 +352,16 @@ jobs:
           fi
 
   # ================================================================
-  # JOB 3: VALIDAÇÃO DOS SCANS
+  # JOB 3: VALIDAÇÃO DOS SCANS (AGORA INCLUI TODOS OS SCANS)
   # ================================================================
   validate-scans:
-    needs: [trivy-scan, grype-scan, dockle-scan, snyk-scan]
+    needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan]
     runs-on: ubuntu-latest
     if: always()
     outputs:
       scan_status: ${{ steps.validate.outputs.status }}
     steps:
-      - name: 🔍 Validating scan results
+      - name: 🔍 Validating all scan results
         id: validate
         run: |
           echo "## 🔍 Security Scans Validation" >> $GITHUB_STEP_SUMMARY
@@ -345,6 +384,14 @@ jobs:
             echo "| **Grype** | ✅ Passed | ${{ needs.grype-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **Grype** | ❌ Failed | ${{ needs.grype-scan.outputs.critical }} |" >> $GITHUB_STEP_SUMMARY
+            FAILED=$((FAILED + 1))
+          fi
+          
+          # Syft (AGORA INCLUÍDO NA VALIDAÇÃO)
+          if [ "${{ needs.syft-scan.outputs.status }}" == "passed" ]; then
+            echo "| **Syft** | ✅ Passed | - |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Syft** | ❌ Failed | - |" >> $GITHUB_STEP_SUMMARY
             FAILED=$((FAILED + 1))
           fi
           
@@ -403,7 +450,6 @@ jobs:
           echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
           echo "| **Registry** | Docker Hub |" >> $GITHUB_STEP_SUMMARY
           echo "| **Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
@@ -421,6 +467,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📋 Pipeline Execution Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           
           # Build status
           if [ "${{ needs.build-image.result }}" == "success" ]; then
@@ -455,16 +504,3 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| **Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Vulnerability summary
-          echo "## 🔒 Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Tool | Critical | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📎 **All scan artifacts are available for download above.**" >> $GITHUB_STEP_SUMMARY
