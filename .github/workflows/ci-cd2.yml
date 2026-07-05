@@ -43,13 +43,8 @@ jobs:
           image-ref: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:1.${{ github.run_number }}
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'  # Opcional: filtra apenas CRITICAL e HIGH
+          severity: 'CRITICAL'  # Opcional: filtra apenas CRITICAL e HIGH
           # ignore-unfixed: true     # Opcional: ignora vulnerabilidades sem correção
-
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: 'trivy-results.sarif'
           
       - name: Upload Trivy results as artifact (para download)
         uses: actions/upload-artifact@v4
