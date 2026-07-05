@@ -23,7 +23,7 @@ jobs:
       code_checked: ${{ steps.checkout.outcome }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v4
         id: checkout
 
       - name: 📂 List repository files
@@ -44,7 +44,7 @@ jobs:
       image_exists: ${{ steps.check-image.outputs.exists }}
     steps:
       - name: 🔍 Checkout code
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v4
 
       - name: 🏗️ Build Docker image locally
         run: |
@@ -59,7 +59,7 @@ jobs:
           ls -lh ${{ env.IMAGE_TAR }}
 
       - name: 📤 Upload image tar as artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: docker-image-tar
           path: ${{ env.IMAGE_TAR }}
@@ -107,7 +107,7 @@ jobs:
       high: ${{ steps.check.outputs.high }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v3.1.0
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -145,7 +145,7 @@ jobs:
           fi
 
       - name: 📤 Upload Trivy results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: trivy-scan-results
           path: trivy-results.sarif
@@ -181,7 +181,7 @@ jobs:
       critical: ${{ steps.check.outputs.critical }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v3.1.0
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -221,7 +221,7 @@ jobs:
           fi
 
       - name: 📤 Upload Grype results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: grype-scan-results
           path: |
@@ -256,7 +256,7 @@ jobs:
       status: ${{ steps.check.outputs.status }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v3.1.0
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -288,7 +288,7 @@ jobs:
           fi
 
       - name: 📤 Upload Syft results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: syft-sbom-results
           path: |
@@ -316,7 +316,7 @@ jobs:
       status: ${{ steps.check.outputs.status }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v3.1.0
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -355,7 +355,7 @@ jobs:
           fi
 
       - name: 📤 Upload Dockle results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: dockle-results
           path: |
@@ -389,7 +389,7 @@ jobs:
       critical: ${{ steps.check.outputs.critical }}
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v3.1.0
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
@@ -426,7 +426,7 @@ jobs:
           fi
 
       - name: 📤 Upload Snyk results
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: snyk-results
           path: |
@@ -531,7 +531,7 @@ jobs:
     if: needs.validate-scans.outputs.scan_status == 'passed'
     steps:
       - name: 📥 Download image tar
-        uses: actions/download-artifact@v3.1.0
+        uses: actions/download-artifact@v4
         with:
           name: docker-image-tar
           path: /tmp
