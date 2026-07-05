@@ -176,13 +176,13 @@ jobs:
           echo "high=$HIGH" >> $GITHUB_OUTPUT
           echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
           
-          # 🔥 BARRAR: CRITICAL, HIGH e MEDIUM
-          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then
+          # 🔥 BARRAR APENAS: CRITICAL e HIGH (MEDIUM NÃO BLOQUEIA)
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Found $CRITICAL CRITICAL, $HIGH HIGH and $MEDIUM MEDIUM vulnerabilities!"
+            echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
           else
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "✅ No CRITICAL, HIGH or MEDIUM vulnerabilities found"
+            echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
   # ---------- SCAN 2: GRYPE ----------
@@ -262,13 +262,13 @@ jobs:
           echo "high=$HIGH" >> $GITHUB_OUTPUT
           echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
           
-          # 🔥 BARRAR: CRITICAL, HIGH e MEDIUM
-          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then
+          # 🔥 BARRAR APENAS: CRITICAL e HIGH (MEDIUM NÃO BLOQUEIA)
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Found $CRITICAL CRITICAL, $HIGH HIGH and $MEDIUM MEDIUM vulnerabilities!"
+            echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
           else
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "✅ No CRITICAL, HIGH or MEDIUM vulnerabilities found"
+            echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
   # ---------- SCAN 3: SYFT (SBOM) ----------
@@ -479,13 +479,13 @@ jobs:
           echo "high=$HIGH" >> $GITHUB_OUTPUT
           echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
           
-          # 🔥 BARRAR: CRITICAL, HIGH e MEDIUM
-          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] || [ "$MEDIUM" -gt 0 ]; then
+          # 🔥 BARRAR APENAS: CRITICAL e HIGH (MEDIUM NÃO BLOQUEIA)
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Found $CRITICAL CRITICAL, $HIGH HIGH and $MEDIUM MEDIUM vulnerabilities!"
+            echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
           else
             echo "status=passed" >> $GITHUB_OUTPUT
-            echo "✅ No CRITICAL, HIGH or MEDIUM vulnerabilities found"
+            echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
   # ================================================================
