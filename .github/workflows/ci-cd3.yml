@@ -1,0 +1,863 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ion-desafio-devops-app
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  IMAGE_TAG: 1.${{ github.run_number }}
+  IMAGE_FULL: ${{ secrets.DOCKER_USERNAME }}/ion-desafio-devops-app:1.${{ github.run_number }}
+  IMAGE_TAR: /tmp/image.tar
+
+jobs:
+  # ================================================================
+  # JOB 1: CHECKOUT DO CÓDIGO
+  # ================================================================
+  checkout-code:
+    runs-on: ubuntu-latest
+    outputs:
+      code_checked: ${{ steps.checkout.outcome }}
+    steps:
+      - name: 🔍 Checkout code
+        uses: actions/checkout@v7.0.0
+        id: checkout
+
+      - name: 📂 List repository files
+        run: |
+          echo "📂 Repository contents:"
+          ls -la
+          echo "✅ Code checked out successfully"
+
+  # ================================================================
+  # JOB 2: BUILD DA IMAGEM (LOCALMENTE + SAVE TAR)
+  # ================================================================
+  build-image:
+    needs: checkout-code
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ env.IMAGE_TAG }}
+      image_exists: ${{ steps.check-image.outputs.exists }}
+    steps:
+      - name: 🔍 Checkout code
+        uses: actions/checkout@v7.0.0
+
+      - name: 🏗️ Build Docker image locally
+        run: |
+          echo "📦 Building image: ${{ env.IMAGE_FULL }}"
+          docker build -t ${{ env.IMAGE_FULL }} -t ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest .
+          echo "✅ Image built with tags:"
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
+
+      - name: 💾 Save image to tar file
+        run: |
+          echo "💾 Saving image to ${{ env.IMAGE_TAR }}"
+          docker save ${{ env.IMAGE_FULL }} ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest -o ${{ env.IMAGE_TAR }}
+          ls -lh ${{ env.IMAGE_TAR }}
+
+      - name: 📤 Upload image tar as artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: docker-image-tar
+          path: ${{ env.IMAGE_TAR }}
+          retention-days: 1
+
+      - name: 🔍 Verify image exists locally
+        id: check-image
+        run: |
+          echo "🔍 Checking if images exist locally..."
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "${{ env.IMAGE_FULL }}"; then
+            echo "✅ Image found: ${{ env.IMAGE_FULL }}"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Image not found locally!"
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"; then
+            echo "✅ Image found: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+          else
+            echo "❌ Warning: latest tag not found locally!"
+          fi
+          
+          echo "📦 Available images:"
+          docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep "${{ env.IMAGE_NAME }}"
+
+      - name: 📊 Generate build report
+        run: |
+          echo "## 🏗️ Build Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Information | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ✅ Built locally |" >> $GITHUB_STEP_SUMMARY
+
+  # ================================================================
+  # JOB 3: SCANS DE SEGURANÇA (EXECUTADOS EM PARALELO)
+  # ================================================================
+  
+  # ---------- SCAN 1: TRIVY ----------
+  trivy-scan:
+    needs: build-image
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      critical: ${{ steps.check.outputs.critical }}
+      high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
+      - name: 🔒 Scan with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_FULL }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: 📊 Generate Trivy report
+        run: |
+          echo "## 🔒 Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          if [ -f "trivy-results.sarif" ]; then
+            CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
+            HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
+            MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
+            LOW=$(grep -o '"severity":"low"' trivy-results.sarif | wc -l || echo "0")
+            echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
+            echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 📤 Upload Trivy results
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: trivy-scan-results
+          path: trivy-results.sarif
+          retention-days: 7
+
+      - name: ✅ Check scan status
+        id: check
+        run: |
+          if [ ! -f "trivy-results.sarif" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
+          CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
+          HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
+          MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          # 🔥 BARRAR APENAS: CRITICAL e HIGH (MEDIUM NÃO BLOQUEIA)
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ No CRITICAL or HIGH vulnerabilities found"
+          fi
+
+  # ---------- SCAN 2: GRYPE ----------
+  grype-scan:
+    needs: build-image
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      critical: ${{ steps.check.outputs.critical }}
+      high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
+      - name: 📦 Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype version
+
+      - name: 🔐 Scan with Grype
+        run: |
+          grype ${{ env.IMAGE_FULL }} -o json > grype-results.json
+          grype ${{ env.IMAGE_FULL }} -o table > grype-results.txt
+
+      - name: 📊 Generate Grype report
+        run: |
+          echo "## 🔐 Grype Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          if [ -f "grype-results.json" ]; then
+            CRITICAL=$(grep -o '"severity":"Critical"' grype-results.json | wc -l || echo "0")
+            HIGH=$(grep -o '"severity":"High"' grype-results.json | wc -l || echo "0")
+            MEDIUM=$(grep -o '"severity":"Medium"' grype-results.json | wc -l || echo "0")
+            LOW=$(grep -o '"severity":"Low"' grype-results.json | wc -l || echo "0")
+            echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
+            echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 📤 Upload Grype results
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: grype-scan-results
+          path: |
+            grype-results.json
+            grype-results.txt
+          retention-days: 7
+
+      - name: ✅ Check scan status
+        id: check
+        run: |
+          if [ ! -f "grype-results.json" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
+          CRITICAL=$(grep -o '"severity":"Critical"' grype-results.json | wc -l || echo "0")
+          HIGH=$(grep -o '"severity":"High"' grype-results.json | wc -l || echo "0")
+          MEDIUM=$(grep -o '"severity":"Medium"' grype-results.json | wc -l || echo "0")
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          # 🔥 BARRAR APENAS: CRITICAL e HIGH (MEDIUM NÃO BLOQUEIA)
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ No CRITICAL or HIGH vulnerabilities found"
+          fi
+
+  # ---------- SCAN 3: SYFT (SBOM) ----------
+  syft-scan:
+    needs: build-image
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
+      - name: 📦 Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft version
+
+      - name: 📋 Generate SBOM with Syft
+        run: |
+          syft ${{ env.IMAGE_FULL }} -o json > syft-sbom.json
+          syft ${{ env.IMAGE_FULL }} -o table > syft-sbom.txt
+          syft ${{ env.IMAGE_FULL }} -o cyclonedx-json > syft-sbom-cyclonedx.json
+
+      - name: 📊 Generate Syft report
+        run: |
+          echo "## 📦 Syft SBOM Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "syft-sbom.json" ]; then
+            PACKAGES=$(grep -o '"name":' syft-sbom.json | wc -l || echo "0")
+            echo "**Total packages discovered:** $PACKAGES" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 📤 Upload Syft results
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: syft-sbom-results
+          path: |
+            syft-sbom.json
+            syft-sbom.txt
+            syft-sbom-cyclonedx.json
+          retention-days: 7
+
+      - name: ✅ Check scan status
+        id: check
+        run: |
+          if [ -f "syft-sbom.json" ]; then
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ SBOM generated successfully"
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ SBOM generation failed"
+          fi
+
+  # ---------- SCAN 4: DOCKLE ----------
+  dockle-scan:
+    needs: build-image
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
+      - name: 📦 Install Dockle
+        run: |
+          VERSION=$(curl --silent "https://api.github.com/repos/goodwithtech/dockle/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -sSfL -o dockle.deb "https://github.com/goodwithtech/dockle/releases/download/v${VERSION}/dockle_${VERSION}_Linux-64bit.deb"
+          sudo dpkg -i dockle.deb > /dev/null 2>&1
+          sudo apt-get install -f -y > /dev/null 2>&1
+          rm -f dockle.deb
+          dockle --version
+
+      - name: 🛡️ Scan with Dockle
+        run: |
+          dockle -f json ${{ env.IMAGE_FULL }} > dockle-results.json
+          dockle ${{ env.IMAGE_FULL }} > dockle-results.txt
+
+      - name: 📊 Generate Dockle report
+        run: |
+          echo "## 🛡️ Dockle Best Practices Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "dockle-results.json" ]; then
+            FATAL=$(grep -o '"level":"FATAL"' dockle-results.json | wc -l || echo "0")
+            WARN=$(grep -o '"level":"WARN"' dockle-results.json | wc -l || echo "0")
+            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 **Fatal** | $FATAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Warn** | $WARN |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 📤 Upload Dockle results
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dockle-results
+          path: |
+            dockle-results.json
+            dockle-results.txt
+          retention-days: 7
+
+      - name: ✅ Check scan status
+        id: check
+        run: |
+          if [ ! -f "dockle-results.json" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
+          FATAL=$(grep -o '"level":"FATAL"' dockle-results.json | wc -l || echo "0")
+          if [ "$FATAL" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Found $FATAL FATAL issues!"
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ No FATAL issues found"
+          fi
+
+  # ---------- SCAN 5: SNYK ----------
+  snyk-scan:
+    needs: build-image
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      critical: ${{ steps.check.outputs.critical }}
+      high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
+
+      - name: 📦 Install Snyk
+        run: |
+          curl -sSfL https://static.snyk.io/cli/latest/snyk-linux -o snyk
+          chmod +x snyk
+          sudo mv snyk /usr/local/bin/
+          snyk --version
+
+      - name: 🚀 Scan with Snyk
+        run: |
+          snyk container test ${{ env.IMAGE_FULL }} --json > snyk-results.json || true
+          snyk container test ${{ env.IMAGE_FULL }} --sarif > snyk-results.sarif || true
+
+      - name: 📊 Generate Snyk report
+        run: |
+          echo "## 🚀 Snyk Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          if [ -f "snyk-results.json" ]; then
+            CRITICAL=$(grep -o '"severity":"critical"' snyk-results.json | wc -l || echo "0")
+            HIGH=$(grep -o '"severity":"high"' snyk-results.json | wc -l || echo "0")
+            MEDIUM=$(grep -o '"severity":"medium"' snyk-results.json | wc -l || echo "0")
+            echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 📤 Upload Snyk results
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snyk-results
+          path: |
+            snyk-results.json
+            snyk-results.sarif
+          retention-days: 7
+
+      - name: ✅ Check scan status
+        id: check
+        run: |
+          if [ ! -f "snyk-results.json" ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "❌ Scan failed - no results file"
+            exit 0
+          fi
+          CRITICAL=$(grep -o '"severity":"critical"' snyk-results.json | wc -l || echo "0")
+          HIGH=$(grep -o '"severity":"high"' snyk-results.json | wc -l || echo "0")
+          MEDIUM=$(grep -o '"severity":"medium"' snyk-results.json | wc -l || echo "0")
+          echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+          
+          # 🔥 BARRAR APENAS: CRITICAL e HIGH (MEDIUM NÃO BLOQUEIA)
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ No CRITICAL or HIGH vulnerabilities found"
+          fi
+
+  # ================================================================
+  # JOB 4: VALIDAÇÃO DOS SCANS
+  # ================================================================
+  validate-scans:
+    needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    outputs:
+      scan_status: ${{ steps.validate.outputs.status }}
+    steps:
+      - name: 🔍 Validating all scan results
+        id: validate
+        run: |
+          echo "## 🔍 Security Scans Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Status | Critical | High | Medium |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|----------|------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          FAILED=0
+          
+          # Trivy
+          if [ "${{ needs.trivy-scan.outputs.status }}" == "passed" ]; then
+            echo "| **Trivy** | ✅ Passed | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Trivy** | ❌ Failed | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+            FAILED=$((FAILED + 1))
+          fi
+          
+          # Grype
+          if [ "${{ needs.grype-scan.outputs.status }}" == "passed" ]; then
+            echo "| **Grype** | ✅ Passed | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Grype** | ❌ Failed | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+            FAILED=$((FAILED + 1))
+          fi
+          
+          # Syft
+          if [ "${{ needs.syft-scan.outputs.status }}" == "passed" ]; then
+            echo "| **Syft** | ✅ Passed | - | - | - |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Syft** | ❌ Failed | - | - | - |" >> $GITHUB_STEP_SUMMARY
+            FAILED=$((FAILED + 1))
+          fi
+          
+          # Dockle
+          if [ "${{ needs.dockle-scan.outputs.status }}" == "passed" ]; then
+            echo "| **Dockle** | ✅ Passed | - | - | - |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Dockle** | ❌ Failed | - | - | - |" >> $GITHUB_STEP_SUMMARY
+            FAILED=$((FAILED + 1))
+          fi
+          
+          # Snyk
+          if [ "${{ needs.snyk-scan.outputs.status }}" == "passed" ]; then
+            echo "| **Snyk** | ✅ Passed | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Snyk** | ❌ Failed | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+            FAILED=$((FAILED + 1))
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ $FAILED -eq 0 ]; then
+            echo "✅ **All scans passed!** Ready to push." >> $GITHUB_STEP_SUMMARY
+            echo "status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "❌ **$FAILED scan(s) failed!** Please review the results." >> $GITHUB_STEP_SUMMARY
+            echo "status=failed" >> $GITHUB_OUTPUT
+          fi
+
+  # ================================================================
+  # JOB 5: PUSH DA IMAGEM PARA O REGISTRY (SÓ SE APROVADO)
+  # ================================================================
+  push-image:
+    needs: [build-image, validate-scans]
+    runs-on: ubuntu-latest
+    if: needs.validate-scans.outputs.scan_status == 'passed'
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          echo "📦 Images loaded:"
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
+
+      - name: 🔑 Login to Docker Hub
+        uses: docker/login-action@v4.4.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 🚀 Push Docker image to Registry
+        run: |
+          echo "📦 Pushing image: ${{ env.IMAGE_FULL }}"
+          echo "🔐 Image approved by security scans!"
+          docker push ${{ env.IMAGE_FULL }}
+          
+          echo "📦 Pushing image: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          
+          echo "✅ Images pushed successfully!"
+
+      - name: 📊 Generate push report
+        run: |
+          echo "## 🚀 Image Push Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Information | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | Docker Hub |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Security Status** | ✅ All scans passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+
+  # ================================================================
+  # JOB 6: CARTOGRAPHY + TRIVY INTEGRATION
+  # ================================================================
+  cartography-integration:
+    needs: [push-image, trivy-scan]
+    runs-on: ubuntu-latest
+    if: needs.push-image.result == 'success'
+    steps:
+      - name: 🔍 Checkout code
+        uses: actions/checkout@v7.0.0
+
+      - name: 📥 Download Trivy results
+        uses: actions/download-artifact@v8
+        with:
+          name: trivy-scan-results
+          path: /tmp/trivy
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Install Cartography and dependencies
+        run: |
+          pip install cartography neo4j
+          cartography --version
+
+      - name: 🗄️ Start Neo4j in background
+        run: |
+          docker run -d --name neo4j-test \
+            -p 7474:7474 -p 7687:7687 \
+            -e NEO4J_AUTH=neo4j/testpassword \
+            neo4j:latest
+          sleep 15
+
+      - name: 🗺️ Run Cartography sync (AWS example)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          cartography \
+            --neo4j-uri bolt://localhost:7687 \
+            --neo4j-user neo4j \
+            --neo4j-password testpassword \
+            --aws-sync-all || echo "⚠️ AWS sync failed, continuing..."
+
+      - name: 🔄 Convert Trivy SARIF to Cartography format
+        run: |
+          python3 << 'EOF'
+          import json
+          
+          # Read SARIF file
+          with open('/tmp/trivy/trivy-results.sarif', 'r') as f:
+              sarif_data = json.load(f)
+          
+          # Extract vulnerabilities
+          vulnerabilities = []
+          for run in sarif_data.get('runs', []):
+              for result in run.get('results', []):
+                  # Get package info from locations
+                  package = 'unknown'
+                  locations = result.get('locations', [])
+                  if locations:
+                      artifact = locations[0].get('physicalLocation', {}).get('artifactLocation', {})
+                      if artifact:
+                          package = artifact.get('uri', 'unknown')
+                  
+                  vuln = {
+                      'id': result.get('ruleId', ''),
+                      'severity': result.get('level', '').upper(),
+                      'title': result.get('message', {}).get('text', ''),
+                      'image': '${{ env.IMAGE_FULL }}',
+                      'package': package,
+                      'scanner': 'trivy'
+                  }
+                  vulnerabilities.append(vuln)
+          
+          # Save formatted data
+          with open('trivy-for-cartography.json', 'w') as f:
+              json.dump({'vulnerabilities': vulnerabilities}, f, indent=2)
+          
+          print(f'✅ Converted {len(vulnerabilities)} vulnerabilities')
+          EOF
+
+      - name: 📤 Import vulnerabilities to Neo4j
+        run: |
+          python3 << 'EOF'
+          from neo4j import GraphDatabase
+          import json
+          
+          # Connect to Neo4j
+          driver = GraphDatabase.driver(
+              'bolt://localhost:7687',
+              auth=('neo4j', 'testpassword')
+          )
+          
+          # Read vulnerabilities
+          with open('trivy-for-cartography.json', 'r') as f:
+              data = json.load(f)
+          
+          # Import each vulnerability
+          with driver.session() as session:
+              for vuln in data['vulnerabilities']:
+                  session.run(
+                      """
+                      MERGE (v:TrivyFinding {
+                          id: $id,
+                          severity: $severity,
+                          title: $title,
+                          image: $image,
+                          package: $package,
+                          scanner: $scanner,
+                          imported_at: datetime()
+                      })
+                      """,
+                      **vuln
+                  )
+          
+          driver.close()
+          print(f'✅ Imported {len(data["vulnerabilities"])} vulnerabilities to Neo4j')
+          EOF
+
+      - name: 📊 Generate Cartography Report
+        run: |
+          echo "## 🗺️ Cartography + Trivy Integration Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Information | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Neo4j URL** | http://localhost:7474 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Scanned** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          VULN_COUNT=$(cat trivy-for-cartography.json | grep -o '"id"' | wc -l || echo "0")
+          echo "| **Vulnerabilities Imported** | $VULN_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ✅ Integrated |" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Useful Cypher Queries:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```cypher' >> $GITHUB_STEP_SUMMARY
+          echo '# View all critical vulnerabilities' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:TrivyFinding {severity: "CRITICAL"}) RETURN v' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '# Count vulnerabilities by severity' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:TrivyFinding) RETURN v.severity, count(v)' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '# Vulnerabilities in specific packages' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:TrivyFinding) WHERE v.package CONTAINS "openssl" RETURN v' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '# Latest vulnerabilities imported' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:TrivyFinding) RETURN v ORDER BY v.imported_at DESC LIMIT 10' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: 📤 Upload Cartography data
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: cartography-integration
+          path: |
+            trivy-for-cartography.json
+          retention-days: 7
+
+      - name: 🧹 Cleanup Neo4j container
+        if: always()
+        run: |
+          docker stop neo4j-test || true
+          docker rm neo4j-test || true
+
+  # ================================================================
+  # JOB 7: RELATÓRIO FINAL COMPLETO
+  # ================================================================
+  final-report:
+    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, push-image, cartography-integration]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 📋 Generate Complete Pipeline Summary
+        run: |
+          echo "# 🎯 DevSecOps Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 📋 Pipeline Execution Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Checkout
+          if [ "${{ needs.checkout-code.result }}" == "success" ]; then
+            echo "| **1. Checkout Code** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **1. Checkout Code** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Build
+          if [ "${{ needs.build-image.result }}" == "success" ]; then
+            echo "| **2. Build Image** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **2. Build Image** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Scans
+          echo "| **3a. Trivy Scan** | ${{ needs.trivy-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3b. Grype Scan** | ${{ needs.grype-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3c. Syft SBOM** | ${{ needs.syft-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3d. Dockle Scan** | ${{ needs.dockle-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3e. Snyk Scan** | ${{ needs.snyk-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Validation
+          if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
+            echo "| **4. Security Validation** | ✅ All Passed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **4. Security Validation** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Push
+          if [ "${{ needs.push-image.result }}" == "success" ]; then
+            echo "| **5. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
+            echo "| **5. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **5. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Cartography
+          if [ "${{ needs.cartography-integration.result }}" == "success" ]; then
+            echo "| **6. Cartography Integration** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.cartography-integration.result }}" == "skipped" ]; then
+            echo "| **6. Cartography Integration** | ⏭️ Skipped (Push failed) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **6. Cartography Integration** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Image Information" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Vulnerability summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔒 Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Critical | High | Medium | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|----------|------|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
+            echo "✅ **Image approved and pushed to registry successfully!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Image NOT pushed due to security scan failures.**" >> $GITHUB_STEP_SUMMARY
+          fi
