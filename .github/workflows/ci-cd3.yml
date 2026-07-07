@@ -611,12 +611,14 @@ jobs:
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 6: CARTOGRAPHY + TRIVY (ANÁLISE DOS RESULTADOS)
+  # JOB 6: CARTOGRAPHY + TRIVY (ANÁLISE DOS RESULTADOS - SEMPRE EXECUTA)
   # ================================================================
   cartography-analysis:
-    needs: [push-image, trivy-scan]
+    needs: [build-image, trivy-scan]  # Só precisa do build e do scan do Trivy
     runs-on: ubuntu-latest
-    if: needs.push-image.result == 'success'
+    # ⚠️ REMOVIDO O if: needs.push-image.result == 'success'
+    # Agora executa SEMPRE que o build e o scan do Trivy foram executados
+    if: always()  # Executa mesmo se o push falhar ou for pulado
     steps:
       - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
@@ -626,18 +628,33 @@ jobs:
         with:
           name: trivy-scan-results
           path: /tmp/trivy
+        continue-on-error: true  # Não falha se não encontrar os resultados
+
+      - name: ⚠️ Check if Trivy results exist
+        id: check-trivy
+        run: |
+          if [ -f "/tmp/trivy/trivy-results.sarif" ]; then
+            echo "✅ Trivy results found"
+            echo "trivy_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Trivy results not found - skipping Cartography analysis"
+            echo "trivy_exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: 🐍 Setup Python
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: 📦 Install Cartography and dependencies
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           pip install cartography neo4j
           cartography --version
 
       - name: 🗄️ Start Neo4j in background
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           docker run -d --name neo4j-test \
             -p 7474:7474 -p 7687:7687 \
@@ -646,6 +663,7 @@ jobs:
           sleep 15
 
       - name: 🔄 Parse Trivy results and create graph data
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           python3 << 'EOF'
           import json
@@ -670,6 +688,7 @@ jobs:
           
           # Track packages to avoid duplicates
           packages_set = set()
+          package_map = {}  # package_name -> package_id
           
           for run in sarif_data.get('runs', []):
               for result in run.get('results', []):
@@ -693,7 +712,10 @@ jobs:
                               package = parts[0]
                               version = parts[1] if len(parts) > 1 else 'unknown'
                           elif '/' in uri:
-                              package = uri.split('/')[-1]
+                              # Try to extract package name from path
+                              path_parts = uri.split('/')
+                              if path_parts:
+                                  package = path_parts[-1]
                   
                   # Add vulnerability node
                   vuln_id = f"vuln_{len(graph_data['vulnerabilities'])}"
@@ -701,10 +723,11 @@ jobs:
                       'id': vuln_id,
                       'cve': rule_id,
                       'severity': severity,
-                      'title': title[:100],  # Truncate for display
+                      'title': title[:100] if title else 'No description',
                       'package': package,
                       'version': version,
-                      'scanner': 'trivy'
+                      'scanner': 'trivy',
+                      'scanned_at': datetime.now().isoformat()
                   }
                   graph_data['vulnerabilities'].append(vulnerability)
                   
@@ -712,18 +735,21 @@ jobs:
                   package_key = f"{package}:{version}"
                   if package_key not in packages_set and package != 'unknown':
                       packages_set.add(package_key)
+                      pkg_id = f"pkg_{len(graph_data['packages'])}"
+                      package_map[package_key] = pkg_id
                       graph_data['packages'].append({
-                          'id': f"pkg_{len(graph_data['packages'])}",
+                          'id': pkg_id,
                           'name': package,
                           'version': version
                       })
                   
                   # Create relationship between vulnerability and package
-                  graph_data['relationships'].append({
-                      'type': 'AFFECTS',
-                      'from': vuln_id,
-                      'to': f"pkg_{list(packages_set).index(package_key)}" if package != 'unknown' and package_key in packages_set else None
-                  })
+                  if package != 'unknown' and package_key in package_map:
+                      graph_data['relationships'].append({
+                          'type': 'AFFECTS',
+                          'from': vuln_id,
+                          'to': package_map[package_key]
+                      })
           
           # Save graph data for import
           with open('cartography-graph-data.json', 'w') as f:
@@ -734,6 +760,7 @@ jobs:
           EOF
 
       - name: 📤 Import data to Neo4j (Cartography format)
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           python3 << 'EOF'
           from neo4j import GraphDatabase
@@ -788,7 +815,8 @@ jobs:
                           title: $title,
                           package: $package,
                           version: $version,
-                          scanner: $scanner
+                          scanner: $scanner,
+                          scanned_at: $scanned_at
                       })
                       """,
                       **vuln
@@ -824,6 +852,7 @@ jobs:
           EOF
 
       - name: 📊 Generate Cartography Analysis Report
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           python3 << 'EOF'
           from neo4j import GraphDatabase
@@ -865,6 +894,16 @@ jobs:
                   """
               )
               critical_vulns = [{'cve': record['cve'], 'title': record['title'], 'package': record['package']} for record in result]
+              
+              # Query 4: High vulnerabilities
+              result = session.run(
+                  """
+                  MATCH (v:Vulnerability {severity: 'HIGH'})
+                  RETURN v.cve as cve, v.title as title, v.package as package
+                  LIMIT 10
+                  """
+              )
+              high_vulns = [{'cve': record['cve'], 'title': record['title'], 'package': record['package']} for record in result]
           
           driver.close()
           
@@ -872,7 +911,8 @@ jobs:
           analysis = {
               'severity_counts': severity_counts,
               'top_affected_packages': top_packages,
-              'critical_vulnerabilities': critical_vulns
+              'critical_vulnerabilities': critical_vulns,
+              'high_vulnerabilities': high_vulns
           }
           with open('cartography-analysis.json', 'w') as f:
               json.dump(analysis, f, indent=2)
@@ -881,6 +921,7 @@ jobs:
           EOF
 
       - name: 📊 Generate Cartography Report
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           echo "## 🗺️ Cartography + Trivy Analysis Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -929,9 +970,22 @@ jobs:
                   print(f"| {vuln['cve']} | {vuln['package']} | {vuln['title'][:50]}... |")
           else:
               print("✅ No critical vulnerabilities found!")
+          
+          # High vulnerabilities
+          print("")
+          print("### 🟠 High Vulnerabilities")
+          print("")
+          if data['high_vulnerabilities']:
+              print("| CVE | Package | Description |")
+              print("|-----|---------|-------------|")
+              for vuln in data['high_vulnerabilities']:
+                  print(f"| {vuln['cve']} | {vuln['package']} | {vuln['title'][:50]}... |")
+          else:
+              print("✅ No high vulnerabilities found!")
           EOF
 
       - name: 🔍 Sample Cypher Queries
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 🔍 Useful Cypher Queries for Neo4j Explorer" >> $GITHUB_STEP_SUMMARY
@@ -951,6 +1005,10 @@ jobs:
           echo '# Find packages with most vulnerabilities' >> $GITHUB_STEP_SUMMARY
           echo 'MATCH (v:Vulnerability)-[:AFFECTS]->(p:Package)' >> $GITHUB_STEP_SUMMARY
           echo 'RETURN p.name, count(v) AS vuln_count ORDER BY vuln_count DESC LIMIT 10' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '# Show vulnerability distribution' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:Vulnerability)' >> $GITHUB_STEP_SUMMARY
+          echo 'RETURN v.severity, count(v) AS total ORDER BY total DESC' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -958,6 +1016,7 @@ jobs:
           echo "**📁 Data exported**: cartography-analysis.json" >> $GITHUB_STEP_SUMMARY
 
       - name: 📤 Upload Cartography analysis data
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: cartography-analysis
@@ -967,7 +1026,7 @@ jobs:
           retention-days: 7
 
       - name: 🧹 Cleanup Neo4j container
-        if: always()
+        if: steps.check-trivy.outputs.trivy_exists == 'true'
         run: |
           docker stop neo4j-test || true
           docker rm neo4j-test || true
@@ -1031,7 +1090,7 @@ jobs:
           if [ "${{ needs.cartography-analysis.result }}" == "success" ]; then
             echo "| **6. Cartography Analysis** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.cartography-analysis.result }}" == "skipped" ]; then
-            echo "| **6. Cartography Analysis** | ⏭️ Skipped (Push failed) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **6. Cartography Analysis** | ⏭️ Skipped (No Trivy results) |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| **6. Cartography Analysis** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
@@ -1057,4 +1116,6 @@ jobs:
             echo "✅ **Image approved and pushed to registry successfully!**" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Image NOT pushed due to security scan failures.**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📊 **Check the Cartography Analysis above for detailed vulnerability information.**" >> $GITHUB_STEP_SUMMARY
           fi
