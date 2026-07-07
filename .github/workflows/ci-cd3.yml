@@ -112,6 +112,7 @@ jobs:
       critical: ${{ steps.check.outputs.critical }}
       high: ${{ steps.check.outputs.high }}
       medium: ${{ steps.check.outputs.medium }}
+      sarif_path: trivy-results.sarif
     steps:
       - name: 📥 Download image tar
         uses: actions/download-artifact@v8
@@ -131,7 +132,7 @@ jobs:
           image-ref: ${{ env.IMAGE_FULL }}
           format: 'sarif'
           output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
 
       - name: 📊 Generate Trivy report
         run: |
@@ -610,9 +611,9 @@ jobs:
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 6: CARTOGRAPHY + TRIVY INTEGRATION
+  # JOB 6: CARTOGRAPHY + TRIVY (ANÁLISE DOS RESULTADOS)
   # ================================================================
-  cartography-integration:
+  cartography-analysis:
     needs: [push-image, trivy-scan]
     runs-on: ubuntu-latest
     if: needs.push-image.result == 'success'
@@ -644,57 +645,95 @@ jobs:
             neo4j:latest
           sleep 15
 
-      - name: 🗺️ Run Cartography sync (AWS example)
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: us-east-1
-        run: |
-          cartography \
-            --neo4j-uri bolt://localhost:7687 \
-            --neo4j-user neo4j \
-            --neo4j-password testpassword \
-            --aws-sync-all || echo "⚠️ AWS sync failed, continuing..."
-
-      - name: 🔄 Convert Trivy SARIF to Cartography format
+      - name: 🔄 Parse Trivy results and create graph data
         run: |
           python3 << 'EOF'
           import json
+          import re
+          from datetime import datetime
           
           # Read SARIF file
           with open('/tmp/trivy/trivy-results.sarif', 'r') as f:
               sarif_data = json.load(f)
           
-          # Extract vulnerabilities
-          vulnerabilities = []
+          # Structure for graph nodes and relationships
+          graph_data = {
+              'image': {
+                  'name': '${{ env.IMAGE_FULL }}',
+                  'tag': '${{ env.IMAGE_TAG }}',
+                  'scanned_at': datetime.now().isoformat()
+              },
+              'vulnerabilities': [],
+              'packages': [],
+              'relationships': []
+          }
+          
+          # Track packages to avoid duplicates
+          packages_set = set()
+          
           for run in sarif_data.get('runs', []):
               for result in run.get('results', []):
-                  # Get package info from locations
-                  package = 'unknown'
+                  # Extract vulnerability data
+                  rule_id = result.get('ruleId', '')
+                  severity = result.get('level', 'UNKNOWN').upper()
+                  title = result.get('message', {}).get('text', '')
+                  
+                  # Extract package and version from locations
                   locations = result.get('locations', [])
+                  package = 'unknown'
+                  version = 'unknown'
+                  
                   if locations:
                       artifact = locations[0].get('physicalLocation', {}).get('artifactLocation', {})
                       if artifact:
-                          package = artifact.get('uri', 'unknown')
+                          uri = artifact.get('uri', '')
+                          # Parse package@version format
+                          if '@' in uri:
+                              parts = uri.split('@')
+                              package = parts[0]
+                              version = parts[1] if len(parts) > 1 else 'unknown'
+                          elif '/' in uri:
+                              package = uri.split('/')[-1]
                   
-                  vuln = {
-                      'id': result.get('ruleId', ''),
-                      'severity': result.get('level', '').upper(),
-                      'title': result.get('message', {}).get('text', ''),
-                      'image': '${{ env.IMAGE_FULL }}',
+                  # Add vulnerability node
+                  vuln_id = f"vuln_{len(graph_data['vulnerabilities'])}"
+                  vulnerability = {
+                      'id': vuln_id,
+                      'cve': rule_id,
+                      'severity': severity,
+                      'title': title[:100],  # Truncate for display
                       'package': package,
+                      'version': version,
                       'scanner': 'trivy'
                   }
-                  vulnerabilities.append(vuln)
+                  graph_data['vulnerabilities'].append(vulnerability)
+                  
+                  # Add package node if new
+                  package_key = f"{package}:{version}"
+                  if package_key not in packages_set and package != 'unknown':
+                      packages_set.add(package_key)
+                      graph_data['packages'].append({
+                          'id': f"pkg_{len(graph_data['packages'])}",
+                          'name': package,
+                          'version': version
+                      })
+                  
+                  # Create relationship between vulnerability and package
+                  graph_data['relationships'].append({
+                      'type': 'AFFECTS',
+                      'from': vuln_id,
+                      'to': f"pkg_{list(packages_set).index(package_key)}" if package != 'unknown' and package_key in packages_set else None
+                  })
           
-          # Save formatted data
-          with open('trivy-for-cartography.json', 'w') as f:
-              json.dump({'vulnerabilities': vulnerabilities}, f, indent=2)
+          # Save graph data for import
+          with open('cartography-graph-data.json', 'w') as f:
+              json.dump(graph_data, f, indent=2)
           
-          print(f'✅ Converted {len(vulnerabilities)} vulnerabilities')
+          print(f'✅ Parsed {len(graph_data["vulnerabilities"])} vulnerabilities')
+          print(f'📦 Found {len(graph_data["packages"])} unique packages')
           EOF
 
-      - name: 📤 Import vulnerabilities to Neo4j
+      - name: 📤 Import data to Neo4j (Cartography format)
         run: |
           python3 << 'EOF'
           from neo4j import GraphDatabase
@@ -706,67 +745,225 @@ jobs:
               auth=('neo4j', 'testpassword')
           )
           
-          # Read vulnerabilities
-          with open('trivy-for-cartography.json', 'r') as f:
+          # Read graph data
+          with open('cartography-graph-data.json', 'r') as f:
               data = json.load(f)
           
-          # Import each vulnerability
           with driver.session() as session:
+              # 1. Create Image node
+              session.run(
+                  """
+                  MERGE (img:Image {
+                      name: $name,
+                      tag: $tag,
+                      scanned_at: $scanned_at
+                  })
+                  """,
+                  **data['image']
+              )
+              print('✅ Image node created')
+              
+              # 2. Create Package nodes
+              for pkg in data['packages']:
+                  session.run(
+                      """
+                      MERGE (p:Package {
+                          id: $id,
+                          name: $name,
+                          version: $version
+                      })
+                      """,
+                      **pkg
+                  )
+              print(f'✅ {len(data["packages"])} Package nodes created')
+              
+              # 3. Create Vulnerability nodes
               for vuln in data['vulnerabilities']:
                   session.run(
                       """
-                      MERGE (v:TrivyFinding {
+                      MERGE (v:Vulnerability {
                           id: $id,
+                          cve: $cve,
                           severity: $severity,
                           title: $title,
-                          image: $image,
                           package: $package,
-                          scanner: $scanner,
-                          imported_at: datetime()
+                          version: $version,
+                          scanner: $scanner
                       })
                       """,
                       **vuln
                   )
+              print(f'✅ {len(data["vulnerabilities"])} Vulnerability nodes created')
+              
+              # 4. Create relationships
+              for rel in data['relationships']:
+                  if rel['to'] is not None:  # Only create if target exists
+                      session.run(
+                          """
+                          MATCH (v:Vulnerability {id: $from})
+                          MATCH (p:Package {id: $to})
+                          MERGE (v)-[:AFFECTS]->(p)
+                          """,
+                          **rel
+                      )
+              print('✅ Relationships created')
+              
+              # 5. Link vulnerabilities to Image
+              session.run(
+                  """
+                  MATCH (v:Vulnerability)
+                  MATCH (img:Image {name: $image_name})
+                  MERGE (v)-[:AFFECTS_IMAGE]->(img)
+                  """,
+                  image_name=data['image']['name']
+              )
+              print('✅ Vulnerabilities linked to Image')
+              
+          driver.close()
+          print('✅ All data imported to Neo4j successfully!')
+          EOF
+
+      - name: 📊 Generate Cartography Analysis Report
+        run: |
+          python3 << 'EOF'
+          from neo4j import GraphDatabase
+          import json
+          
+          driver = GraphDatabase.driver(
+              'bolt://localhost:7687',
+              auth=('neo4j', 'testpassword')
+          )
+          
+          with driver.session() as session:
+              # Query 1: Count by severity
+              result = session.run(
+                  """
+                  MATCH (v:Vulnerability)
+                  RETURN v.severity as severity, count(v) as total
+                  ORDER BY total DESC
+                  """
+              )
+              severity_counts = {record['severity']: record['total'] for record in result}
+              
+              # Query 2: Top affected packages
+              result = session.run(
+                  """
+                  MATCH (v:Vulnerability)-[:AFFECTS]->(p:Package)
+                  RETURN p.name as package, count(v) as vuln_count
+                  ORDER BY vuln_count DESC
+                  LIMIT 5
+                  """
+              )
+              top_packages = [{'package': record['package'], 'count': record['vuln_count']} for record in result]
+              
+              # Query 3: Critical vulnerabilities
+              result = session.run(
+                  """
+                  MATCH (v:Vulnerability {severity: 'CRITICAL'})
+                  RETURN v.cve as cve, v.title as title, v.package as package
+                  LIMIT 10
+                  """
+              )
+              critical_vulns = [{'cve': record['cve'], 'title': record['title'], 'package': record['package']} for record in result]
           
           driver.close()
-          print(f'✅ Imported {len(data["vulnerabilities"])} vulnerabilities to Neo4j')
+          
+          # Save analysis results
+          analysis = {
+              'severity_counts': severity_counts,
+              'top_affected_packages': top_packages,
+              'critical_vulnerabilities': critical_vulns
+          }
+          with open('cartography-analysis.json', 'w') as f:
+              json.dump(analysis, f, indent=2)
+          
+          print('✅ Analysis data saved')
           EOF
 
       - name: 📊 Generate Cartography Report
         run: |
-          echo "## 🗺️ Cartography + Trivy Integration Report" >> $GITHUB_STEP_SUMMARY
+          echo "## 🗺️ Cartography + Trivy Analysis Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Information | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Neo4j URL** | http://localhost:7474 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image Scanned** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
-          VULN_COUNT=$(cat trivy-for-cartography.json | grep -o '"id"' | wc -l || echo "0")
-          echo "| **Vulnerabilities Imported** | $VULN_COUNT |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Status** | ✅ Integrated |" >> $GITHUB_STEP_SUMMARY
           
+          # Load analysis data
+          python3 << 'EOF' >> $GITHUB_STEP_SUMMARY
+          import json
+          
+          with open('cartography-analysis.json', 'r') as f:
+              data = json.load(f)
+          
+          # Image info
+          print(f"| **Image** | ${{ env.IMAGE_FULL }} |")
+          print(f"| **Tag** | ${{ env.IMAGE_TAG }} |")
+          print(f"| **Total Vulnerabilities** | {sum(data['severity_counts'].values())} |")
+          print("")
+          
+          # Severity breakdown
+          print("### 📊 Vulnerability Severity Distribution")
+          print("")
+          print("| Severity | Count |")
+          print("|----------|-------|")
+          severity_order = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN']
+          for severity in severity_order:
+              count = data['severity_counts'].get(severity, 0)
+              emoji = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🟢'}.get(severity, '⚪')
+              print(f"| {emoji} **{severity}** | {count} |")
+          
+          # Top packages
+          print("")
+          print("### 📦 Top 5 Affected Packages")
+          print("")
+          print("| Package | Vulnerabilities |")
+          print("|---------|-----------------|")
+          for pkg in data['top_affected_packages']:
+              print(f"| {pkg['package']} | {pkg['count']} |")
+          
+          # Critical vulnerabilities
+          print("")
+          print("### 🔴 Critical Vulnerabilities")
+          print("")
+          if data['critical_vulnerabilities']:
+              print("| CVE | Package | Description |")
+              print("|-----|---------|-------------|")
+              for vuln in data['critical_vulnerabilities']:
+                  print(f"| {vuln['cve']} | {vuln['package']} | {vuln['title'][:50]}... |")
+          else:
+              print("✅ No critical vulnerabilities found!")
+          EOF
+
+      - name: 🔍 Sample Cypher Queries
+        run: |
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔍 Useful Cypher Queries:" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔍 Useful Cypher Queries for Neo4j Explorer" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```cypher' >> $GITHUB_STEP_SUMMARY
-          echo '# View all critical vulnerabilities' >> $GITHUB_STEP_SUMMARY
-          echo 'MATCH (v:TrivyFinding {severity: "CRITICAL"}) RETURN v' >> $GITHUB_STEP_SUMMARY
+          echo '# View all vulnerabilities' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:Vulnerability) RETURN v LIMIT 25' >> $GITHUB_STEP_SUMMARY
           echo '' >> $GITHUB_STEP_SUMMARY
-          echo '# Count vulnerabilities by severity' >> $GITHUB_STEP_SUMMARY
-          echo 'MATCH (v:TrivyFinding) RETURN v.severity, count(v)' >> $GITHUB_STEP_SUMMARY
+          echo '# Find critical vulnerabilities with affected packages' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:Vulnerability {severity: "CRITICAL"})-[:AFFECTS]->(p:Package)' >> $GITHUB_STEP_SUMMARY
+          echo 'RETURN v.cve, p.name, v.title' >> $GITHUB_STEP_SUMMARY
           echo '' >> $GITHUB_STEP_SUMMARY
-          echo '# Vulnerabilities in specific packages' >> $GITHUB_STEP_SUMMARY
-          echo 'MATCH (v:TrivyFinding) WHERE v.package CONTAINS "openssl" RETURN v' >> $GITHUB_STEP_SUMMARY
+          echo '# Count vulnerabilities by severity for this image' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:Vulnerability)-[:AFFECTS_IMAGE]->(img:Image {name: "${{ env.IMAGE_FULL }}"})' >> $GITHUB_STEP_SUMMARY
+          echo 'RETURN v.severity, count(v)' >> $GITHUB_STEP_SUMMARY
           echo '' >> $GITHUB_STEP_SUMMARY
-          echo '# Latest vulnerabilities imported' >> $GITHUB_STEP_SUMMARY
-          echo 'MATCH (v:TrivyFinding) RETURN v ORDER BY v.imported_at DESC LIMIT 10' >> $GITHUB_STEP_SUMMARY
+          echo '# Find packages with most vulnerabilities' >> $GITHUB_STEP_SUMMARY
+          echo 'MATCH (v:Vulnerability)-[:AFFECTS]->(p:Package)' >> $GITHUB_STEP_SUMMARY
+          echo 'RETURN p.name, count(v) AS vuln_count ORDER BY vuln_count DESC LIMIT 10' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**🌐 Neo4j Browser**: http://localhost:7474 (user: neo4j, password: testpassword)" >> $GITHUB_STEP_SUMMARY
+          echo "**📁 Data exported**: cartography-analysis.json" >> $GITHUB_STEP_SUMMARY
 
-      - name: 📤 Upload Cartography data
+      - name: 📤 Upload Cartography analysis data
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: cartography-integration
+          name: cartography-analysis
           path: |
-            trivy-for-cartography.json
+            cartography-graph-data.json
+            cartography-analysis.json
           retention-days: 7
 
       - name: 🧹 Cleanup Neo4j container
@@ -779,7 +976,7 @@ jobs:
   # JOB 7: RELATÓRIO FINAL COMPLETO
   # ================================================================
   final-report:
-    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, push-image, cartography-integration]
+    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, push-image, cartography-analysis]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -831,12 +1028,12 @@ jobs:
           fi
           
           # Cartography
-          if [ "${{ needs.cartography-integration.result }}" == "success" ]; then
-            echo "| **6. Cartography Integration** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.cartography-integration.result }}" == "skipped" ]; then
-            echo "| **6. Cartography Integration** | ⏭️ Skipped (Push failed) |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.cartography-analysis.result }}" == "success" ]; then
+            echo "| **6. Cartography Analysis** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.cartography-analysis.result }}" == "skipped" ]; then
+            echo "| **6. Cartography Analysis** | ⏭️ Skipped (Push failed) |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **6. Cartography Integration** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            echo "| **6. Cartography Analysis** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
