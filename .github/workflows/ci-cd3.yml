@@ -560,62 +560,10 @@ jobs:
           fi
 
   # ================================================================
-  # JOB 5: PUSH DA IMAGEM PARA O REGISTRY (SÓ SE APROVADO)
-  # ================================================================
-  push-image:
-    needs: [build-image, validate-scans]
-    runs-on: ubuntu-latest
-    if: needs.validate-scans.outputs.scan_status == 'passed'
-    steps:
-      - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
-        with:
-          name: docker-image-tar
-          path: /tmp
-
-      - name: 📦 Load image from tar
-        run: |
-          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
-          docker load -i ${{ env.IMAGE_TAR }}
-          echo "📦 Images loaded:"
-          docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
-
-      - name: 🔑 Login to Docker Hub
-        uses: docker/login-action@v4.4.0
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: 🚀 Push Docker image to Registry
-        run: |
-          echo "📦 Pushing image: ${{ env.IMAGE_FULL }}"
-          echo "🔐 Image approved by security scans!"
-          docker push ${{ env.IMAGE_FULL }}
-          
-          echo "📦 Pushing image: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
-          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-          
-          echo "✅ Images pushed successfully!"
-
-      - name: 📊 Generate push report
-        run: |
-          echo "## 🚀 Image Push Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Information | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Registry** | Docker Hub |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Security Status** | ✅ All scans passed |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-
-  # ================================================================
-  # JOB 6: CARTOGRAPHY + TRIVY (ANÁLISE DE VULNERABILIDADES)
+  # JOB 5: CARTOGRAPHY + TRIVY (ANÁLISE DE VULNERABILIDADES)
   # ================================================================
   cartography-trivy-analysis:
-    needs: [build-image, trivy-scan]
+    needs: [build-image, trivy-scan, validate-scans]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -920,10 +868,10 @@ jobs:
           docker rm neo4j-trivy || true
 
   # ================================================================
-  # JOB 7: CARTOGRAPHY + SYFT (ANÁLISE DE DEPENDÊNCIAS)
+  # JOB 6: CARTOGRAPHY + SYFT (ANÁLISE DE DEPENDÊNCIAS)
   # ================================================================
   cartography-syft-analysis:
-    needs: [build-image, syft-scan]
+    needs: [build-image, syft-scan, validate-scans]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1248,10 +1196,62 @@ jobs:
           docker rm neo4j-syft || true
 
   # ================================================================
+  # JOB 7: PUSH DA IMAGEM PARA O REGISTRY (SÓ SE APROVADO)
+  # ================================================================
+  push-image:
+    needs: [build-image, validate-scans, cartography-trivy-analysis, cartography-syft-analysis]
+    runs-on: ubuntu-latest
+    if: needs.validate-scans.outputs.scan_status == 'passed'
+    steps:
+      - name: 📥 Download image tar
+        uses: actions/download-artifact@v8
+        with:
+          name: docker-image-tar
+          path: /tmp
+
+      - name: 📦 Load image from tar
+        run: |
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          echo "📦 Images loaded:"
+          docker images --format "{{.Repository}}:{{.Tag}}" | grep "${{ env.IMAGE_NAME }}"
+
+      - name: 🔑 Login to Docker Hub
+        uses: docker/login-action@v4.4.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 🚀 Push Docker image to Registry
+        run: |
+          echo "📦 Pushing image: ${{ env.IMAGE_FULL }}"
+          echo "🔐 Image approved by security scans!"
+          docker push ${{ env.IMAGE_FULL }}
+          
+          echo "📦 Pushing image: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          
+          echo "✅ Images pushed successfully!"
+
+      - name: 📊 Generate push report
+        run: |
+          echo "## 🚀 Image Push Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Information | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Name** | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** | ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | Docker Hub |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Security Status** | ✅ All scans passed |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+
+  # ================================================================
   # JOB 8: RELATÓRIO FINAL COMPLETO
   # ================================================================
   final-report:
-    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, push-image, cartography-trivy-analysis, cartography-syft-analysis]
+    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, cartography-trivy-analysis, cartography-syft-analysis, push-image]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1293,31 +1293,31 @@ jobs:
             echo "| **4. Security Validation** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Push
-          if [ "${{ needs.push-image.result }}" == "success" ]; then
-            echo "| **5. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
-            echo "| **5. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| **5. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          # Cartography - Trivy
+          # Cartography - Trivy (agora após validate-scans)
           if [ "${{ needs.cartography-trivy-analysis.result }}" == "success" ]; then
-            echo "| **6a. Cartography + Trivy** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+            echo "| **5a. Cartography + Trivy** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.cartography-trivy-analysis.result }}" == "skipped" ]; then
-            echo "| **6a. Cartography + Trivy** | ⏭️ Skipped (No results) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **5a. Cartography + Trivy** | ⏭️ Skipped (No results) |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **6a. Cartography + Trivy** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            echo "| **5a. Cartography + Trivy** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Cartography - Syft
+          # Cartography - Syft (agora após validate-scans)
           if [ "${{ needs.cartography-syft-analysis.result }}" == "success" ]; then
-            echo "| **6b. Cartography + Syft** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+            echo "| **5b. Cartography + Syft** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.cartography-syft-analysis.result }}" == "skipped" ]; then
-            echo "| **6b. Cartography + Syft** | ⏭️ Skipped (No results) |" >> $GITHUB_STEP_SUMMARY
+            echo "| **5b. Cartography + Syft** | ⏭️ Skipped (No results) |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **6b. Cartography + Syft** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            echo "| **5b. Cartography + Syft** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Push (agora após Cartography)
+          if [ "${{ needs.push-image.result }}" == "success" ]; then
+            echo "| **6. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
+            echo "| **6. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **6. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
