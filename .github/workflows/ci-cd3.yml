@@ -590,7 +590,7 @@ jobs:
 
       - name: 🐍 Setup Python
         if: steps.check-trivy.outputs.trivy_exists == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.10'
 
@@ -898,7 +898,7 @@ jobs:
 
       - name: 🐍 Setup Python
         if: steps.check-syft.outputs.syft_exists == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.10'
 
