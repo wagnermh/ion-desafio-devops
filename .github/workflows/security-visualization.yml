@@ -1,94 +1,111 @@
 name: Security Visualization Generator
 
 on:
+  workflow_dispatch:
+    # Permite execução manual com opção de especificar o run_id
+    inputs:
+      run_id:
+        description: 'Run ID do workflow Build and Deploy (deixe em branco para usar o último)'
+        required: false
+        type: string
+        default: ''
   workflow_run:
     workflows: ["Build and Deploy"]
     types: [completed]
-  workflow_dispatch:  # Permite execução manual
+    # IMPORTANTE: Isso permite que o workflow seja acionado automaticamente
 
 jobs:
   generate-visualizations:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    # Executa se:
+    # 1. Foi acionado manualmente (workflow_dispatch)
+    # 2. OU foi acionado pelo workflow_run E o workflow Build and Deploy foi bem-sucedido
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     
     steps:
       - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
 
-      - name: 📥 Download all artifacts from build pipeline
+      - name: 🔍 Determinar Run ID
+        id: get-run-id
+        run: |
+          # Se for workflow_dispatch e o usuário passou um run_id, usa ele
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ github.event.inputs.run_id }}" ]; then
+            RUN_ID="${{ github.event.inputs.run_id }}"
+            echo "✅ Usando Run ID especificado manualmente: $RUN_ID"
+          elif [ "${{ github.event_name }}" == "workflow_run" ]; then
+            # Se for workflow_run, usa o run_id do workflow que disparou
+            RUN_ID="${{ github.event.workflow_run.id }}"
+            echo "✅ Usando Run ID do workflow_run: $RUN_ID"
+          else
+            # Se for workflow_dispatch sem run_id, busca o último run do Build and Deploy
+            echo "🔍 Buscando último Run ID do workflow 'Build and Deploy'..."
+            RUN_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-and-deploy.yml/runs?status=success&per_page=1" \
+              | jq -r '.workflow_runs[0].id')
+            
+            if [ -z "$RUN_ID" ] || [ "$RUN_ID" == "null" ]; then
+              echo "❌ Nenhum run do 'Build and Deploy' encontrado!"
+              echo "run_id=null" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            echo "✅ Usando último Run ID encontrado: $RUN_ID"
+          fi
+          
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          echo "🔍 Run ID: $RUN_ID"
+
+      - name: 📥 Baixar artefatos do pipeline principal
+        if: steps.get-run-id.outputs.run_id != 'null'
         uses: actions/download-artifact@v8
         with:
           path: /tmp/artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.get-run-id.outputs.run_id }}
+
+      - name: ⚠️ Verificar artefatos baixados
+        id: check-artifacts
+        run: |
+          echo "📂 Conteúdo de /tmp/artifacts:"
+          ls -la /tmp/artifacts || echo "⚠️ Diretório vazio ou não existe"
+          
+          # Verifica se há artefatos de análise
+          if [ -d "/tmp/artifacts/trivy-analysis" ] || [ -d "/tmp/artifacts/syft-analysis" ]; then
+            echo "✅ Artefatos de análise encontrados!"
+            echo "artifacts_exist=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Nenhum artefato de análise encontrado. Verifique se o pipeline 'Build and Deploy' foi executado com sucesso."
+            echo "artifacts_exist=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: 🐍 Setup Python
+        if: steps.check-artifacts.outputs.artifacts_exist == 'true'
         uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: 📦 Install Python dependencies
+      - name: 📦 Instalar dependências Python
+        if: steps.check-artifacts.outputs.artifacts_exist == 'true'
         run: |
-          pip install -r requirements.txt
-          pip install mermaid-cli  # Para renderizar Mermaid para PNG
+          pip install -r requirements.txt 2>/dev/null || true
+          pip install click jinja2 markdown
 
-      - name: 📊 Generate Mermaid Diagrams
+      - name: 📊 Gerar diagramas Mermaid
+        if: steps.check-artifacts.outputs.artifacts_exist == 'true'
         run: |
           mkdir -p diagrams/mermaid
-          python scripts/generate-mermaid-diagrams.py \
-            --input /tmp/artifacts \
-            --output diagrams/mermaid
-
-      - name: ✏️ Generate Excalidraw Dashboards
-        run: |
-          mkdir -p diagrams/excalidraw
-          python scripts/generate-excalidraw-dashboard.py \
-            --input /tmp/artifacts \
-            --output diagrams/excalidraw
-
-      - name: 📝 Generate Complete Security Report
-        run: |
-          python scripts/generate-security-report.py \
-            --mermaid diagrams/mermaid \
-            --excalidraw diagrams/excalidraw \
-            --output security-report.md
-
-      - name: 📤 Upload all visualizations
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: security-visualizations-${{ github.run_number }}
-          path: |
-            diagrams/
-            security-report.md
-          retention-days: 90
-
-      - name: 📝 Update GitHub Release
-        if: github.event.workflow_run.conclusion == 'success'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: security-report-${{ github.run_number }}
-          name: 🔒 Security Report - Run ${{ github.run_number }}
-          body_path: security-report.md
-          files: |
-            diagrams/**/*.png
-            diagrams/**/*.json
-            security-report.md
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 📋 Update Project Wiki
-        if: github.event.workflow_run.conclusion == 'success'
-        run: |
-          # Copia diagrams para a wiki do repositório
-          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git wiki/
-          cp diagrams/mermaid/*.png wiki/
-          cp security-report.md wiki/Home.md
-          cd wiki
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "Update security visualizations - Run ${{ github.run_number }}" || true
-          git push || true
+          if [ -f "scripts/generate-mermaid-diagrams.py" ]; then
+            python scripts/generate-mermaid-diagrams.py \
+              --input /tmp/artifacts/ \
+              --output diagrams/mermaid/
+          else
+            echo "⚠️ Script generate-mermaid-diagrams.py não encontrado"
+            # Cria um diagrama placeholder
+            cat > diagrams/mermaid/pipeline.md << 'EOF'
+            ```mermaid
+            graph TD
+                A[⚠️ Dados não disponíveis] --> B[Execute o pipeline Build and Deploy primeiro]
+                B --> C[Depois execute este workflow novamente]

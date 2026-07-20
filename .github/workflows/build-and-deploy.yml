@@ -1,8 +1,8 @@
 name: Build and Deploy
 
 on:
-#  push:
-#    branches: [ main ]
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -1196,10 +1196,149 @@ jobs:
           docker rm neo4j-syft || true
 
   # ================================================================
-  # JOB 7: PUSH DA IMAGEM PARA O REGISTRY (SÓ SE APROVADO)
+  # JOB 7: PARSE E GERAR VISUALIZAÇÕES (MERMAID + EXCALIDRAW)
+  # ================================================================
+  generate-visualizations:
+    needs: [build-image, validate-scans, cartography-trivy-analysis, cartography-syft-analysis]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: 🔍 Checkout code
+        uses: actions/checkout@v7.0.0
+
+      - name: 📥 Download Trivy analysis
+        uses: actions/download-artifact@v8
+        with:
+          name: trivy-analysis
+          path: /tmp/trivy-analysis
+        continue-on-error: true
+
+      - name: 📥 Download Syft analysis
+        uses: actions/download-artifact@v8
+        with:
+          name: syft-analysis
+          path: /tmp/syft-analysis
+        continue-on-error: true
+
+      - name: 📥 Download Trivy scan results
+        uses: actions/download-artifact@v8
+        with:
+          name: trivy-scan-results
+          path: /tmp/trivy-scan
+        continue-on-error: true
+
+      - name: 📥 Download Syft scan results
+        uses: actions/download-artifact@v8
+        with:
+          name: syft-sbom-results
+          path: /tmp/syft-scan
+        continue-on-error: true
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 📦 Install Python dependencies
+        run: |
+          pip install -r requirements.txt || true
+          pip install click jinja2 markdown
+
+      - name: 📊 Parse Trivy results
+        run: |
+          mkdir -p parsed-data
+          if [ -f "/tmp/trivy-scan/trivy-results.sarif" ]; then
+            python scripts/parse-trivy-results.py \
+              --input /tmp/trivy-scan/trivy-results.sarif \
+              --output-json parsed-data/trivy-parsed.json \
+              --output-markdown parsed-data/trivy-report.md \
+              --output-dir parsed-data/
+          else
+            echo "⚠️ Trivy results not found, creating placeholder"
+            echo '{"severity_counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}}' > parsed-data/trivy-simplified.json
+          fi
+
+      - name: 📊 Parse Syft results
+        run: |
+          mkdir -p parsed-data
+          if [ -f "/tmp/syft-scan/syft-sbom.json" ]; then
+            python scripts/parse-syft-results.py \
+              --input /tmp/syft-scan/syft-sbom.json \
+              --output-json parsed-data/syft-parsed.json \
+              --output-markdown parsed-data/syft-report.md \
+              --output-dir parsed-data/
+          else
+            echo "⚠️ Syft results not found, creating placeholder"
+            echo '{"total_packages": 0, "packages_by_type": {}}' > parsed-data/syft-simplified.json
+          fi
+
+      - name: 📊 Generate Mermaid Diagrams
+        run: |
+          mkdir -p diagrams/mermaid
+          python scripts/generate-mermaid-diagrams.py \
+            --input parsed-data/ \
+            --output diagrams/mermaid/
+
+      - name: ✏️ Generate Excalidraw Dashboard
+        run: |
+          mkdir -p diagrams/excalidraw
+          python scripts/generate-excalidraw-dashboard.py \
+            --input parsed-data/ \
+            --output diagrams/excalidraw/
+
+      - name: 📝 Generate Complete Security Report
+        run: |
+          python scripts/generate-security-report.py \
+            --mermaid diagrams/mermaid \
+            --excalidraw diagrams/excalidraw \
+            --output security-report.md
+
+      - name: 📤 Upload Mermaid Diagrams
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mermaid-diagrams
+          path: diagrams/mermaid/
+          retention-days: 30
+
+      - name: 📤 Upload Excalidraw Dashboard
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: excalidraw-dashboard
+          path: diagrams/excalidraw/
+          retention-days: 30
+
+      - name: 📤 Upload Security Report
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: security-report
+          path: |
+            security-report.md
+            parsed-data/
+          retention-days: 30
+
+      - name: 📊 Add report to job summary
+        run: |
+          echo "# 🎯 Security Visualizations Generated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Mermaid Diagrams" >> $GITHUB_STEP_SUMMARY
+          echo "- Pipeline Diagram" >> $GITHUB_STEP_SUMMARY
+          echo "- Vulnerability Distribution" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependency Graph" >> $GITHUB_STEP_SUMMARY
+          echo "- Sequence Diagram" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎨 Excalidraw Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "- Interactive Security Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "- Download the JSON file and open in Excalidraw" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📝 Complete Report" >> $GITHUB_STEP_SUMMARY
+          echo "- Download `security-report.md`" >> $GITHUB_STEP_SUMMARY
+
+  # ================================================================
+  # JOB 8: PUSH DA IMAGEM PARA O REGISTRY (SÓ SE APROVADO)
   # ================================================================
   push-image:
-    needs: [build-image, validate-scans, cartography-trivy-analysis, cartography-syft-analysis]
+    needs: [build-image, validate-scans, cartography-trivy-analysis, cartography-syft-analysis, generate-visualizations]
     runs-on: ubuntu-latest
     if: needs.validate-scans.outputs.scan_status == 'passed'
     steps:
@@ -1248,10 +1387,10 @@ jobs:
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 8: RELATÓRIO FINAL COMPLETO
+  # JOB 9: RELATÓRIO FINAL COMPLETO
   # ================================================================
   final-report:
-    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, cartography-trivy-analysis, cartography-syft-analysis, push-image]
+    needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, validate-scans, cartography-trivy-analysis, cartography-syft-analysis, generate-visualizations, push-image]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1293,7 +1432,7 @@ jobs:
             echo "| **4. Security Validation** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Cartography - Trivy (agora após validate-scans)
+          # Cartography - Trivy
           if [ "${{ needs.cartography-trivy-analysis.result }}" == "success" ]; then
             echo "| **5a. Cartography + Trivy** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.cartography-trivy-analysis.result }}" == "skipped" ]; then
@@ -1302,7 +1441,7 @@ jobs:
             echo "| **5a. Cartography + Trivy** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Cartography - Syft (agora após validate-scans)
+          # Cartography - Syft
           if [ "${{ needs.cartography-syft-analysis.result }}" == "success" ]; then
             echo "| **5b. Cartography + Syft** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.cartography-syft-analysis.result }}" == "skipped" ]; then
@@ -1311,13 +1450,20 @@ jobs:
             echo "| **5b. Cartography + Syft** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Push (agora após Cartography)
-          if [ "${{ needs.push-image.result }}" == "success" ]; then
-            echo "| **6. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
-          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
-            echo "| **6. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
+          # Visualizations
+          if [ "${{ needs.generate-visualizations.result }}" == "success" ]; then
+            echo "| **6. Generate Visualizations** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "| **6. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            echo "| **6. Generate Visualizations** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Push
+          if [ "${{ needs.push-image.result }}" == "success" ]; then
+            echo "| **7. Push to Registry** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.push-image.result }}" == "skipped" ]; then
+            echo "| **7. Push to Registry** | ⏭️ Skipped (Security failed) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **7. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -1337,13 +1483,11 @@ jobs:
           echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 SBOM Summary (Syft)" >> $GITHUB_STEP_SUMMARY
+          echo "## 📊 Visualizations Generated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.syft-scan.outputs.status }}" == "passed" ]; then
-            echo "✅ **SBOM generated successfully - see Cartography + Syft analysis above**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **SBOM generation failed**" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "✅ **Mermaid Diagrams** - Available in artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Excalidraw Dashboard** - Available in artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Security Report** - Available in artifacts" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
@@ -1351,7 +1495,8 @@ jobs:
           else
             echo "❌ **Image NOT pushed due to security scan failures.**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "📊 **Check the Cartography analyses above for detailed information:**" >> $GITHUB_STEP_SUMMARY
-            echo "- **Trivy Analysis**: Vulnerability distribution and affected packages" >> $GITHUB_STEP_SUMMARY
-            echo "- **Syft Analysis**: Dependency tree and package relationships" >> $GITHUB_STEP_SUMMARY
+            echo "📊 **Check the visualizations above for detailed information:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Download Mermaid diagrams from artifacts" >> $GITHUB_STEP_SUMMARY
+            echo "- Download Excalidraw dashboard from artifacts" >> $GITHUB_STEP_SUMMARY
+            echo "- View complete security report" >> $GITHUB_STEP_SUMMARY
           fi
