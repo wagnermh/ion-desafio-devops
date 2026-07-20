@@ -1,0 +1,29 @@
+# Python dependencies for security visualization scripts
+
+# Core
+pyyaml==6.0.1
+json5==0.9.14
+
+# For Mermaid diagrams
+mermaid-cli==0.10.0
+
+# For Excalidraw
+excalidraw==0.1.0
+
+# Data processing
+pandas==2.2.1
+numpy==1.26.4
+
+# Neo4j for Cartography
+neo4j==5.21.0
+
+# Utilities
+click==8.1.7
+jinja2==3.1.3
+markdown==3.6.0
+
+# For generating images from Mermaid
+puppeteer==21.0.0  # Optional, for headless rendering
+
+# For PDF reports
+weasyprint==62.3

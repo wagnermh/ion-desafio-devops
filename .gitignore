@@ -1,0 +1,23 @@
+# Security visualization artifacts
+diagrams/
+security-report.md
+*.png
+*.svg
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Generated files
+*.log
+*.tar
+*.json
+!templates/*.json

@@ -1,0 +1,94 @@
+name: Security Visualization Generator
+
+on:
+  workflow_run:
+    workflows: ["Build and Deploy"]
+    types: [completed]
+  workflow_dispatch:  # Permite execução manual
+
+jobs:
+  generate-visualizations:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: 🔍 Checkout code
+        uses: actions/checkout@v7.0.0
+
+      - name: 📥 Download all artifacts from build pipeline
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 📦 Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install mermaid-cli  # Para renderizar Mermaid para PNG
+
+      - name: 📊 Generate Mermaid Diagrams
+        run: |
+          mkdir -p diagrams/mermaid
+          python scripts/generate-mermaid-diagrams.py \
+            --input /tmp/artifacts \
+            --output diagrams/mermaid
+
+      - name: ✏️ Generate Excalidraw Dashboards
+        run: |
+          mkdir -p diagrams/excalidraw
+          python scripts/generate-excalidraw-dashboard.py \
+            --input /tmp/artifacts \
+            --output diagrams/excalidraw
+
+      - name: 📝 Generate Complete Security Report
+        run: |
+          python scripts/generate-security-report.py \
+            --mermaid diagrams/mermaid \
+            --excalidraw diagrams/excalidraw \
+            --output security-report.md
+
+      - name: 📤 Upload all visualizations
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: security-visualizations-${{ github.run_number }}
+          path: |
+            diagrams/
+            security-report.md
+          retention-days: 90
+
+      - name: 📝 Update GitHub Release
+        if: github.event.workflow_run.conclusion == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: security-report-${{ github.run_number }}
+          name: 🔒 Security Report - Run ${{ github.run_number }}
+          body_path: security-report.md
+          files: |
+            diagrams/**/*.png
+            diagrams/**/*.json
+            security-report.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📋 Update Project Wiki
+        if: github.event.workflow_run.conclusion == 'success'
+        run: |
+          # Copia diagrams para a wiki do repositório
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git wiki/
+          cp diagrams/mermaid/*.png wiki/
+          cp security-report.md wiki/Home.md
+          cd wiki
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Update security visualizations - Run ${{ github.run_number }}" || true
+          git push || true
