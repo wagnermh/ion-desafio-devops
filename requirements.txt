@@ -26,4 +26,5 @@ markdown==3.6.0
 puppeteer==21.0.0  # Optional, for headless rendering
 
 # For PDF reports
-weasyprint==62.3
+#weasyprint==62.3
+weasyprint==68.0
