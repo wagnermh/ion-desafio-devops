@@ -447,7 +447,7 @@ jobs:
             echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
-  # ---------- CLAIR (USANDO ACTION OFICIAL) ----------
+  # ---------- CLAIR (COM DOCKER RUN + POSTGRES) ----------
   clair-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -464,29 +464,61 @@ jobs:
           name: docker-image-tar
           path: /tmp
 
-      - name: 📦 Copy tar to workspace
+      - name: 📦 Load image from tar
         run: |
-          cp /tmp/image.tar ${{ github.workspace }}/image.tar
-          ls -lh ${{ github.workspace }}/image.tar
+          echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
+          docker load -i ${{ env.IMAGE_TAR }}
+          docker images
 
-      - name: 🔍 Run Clair V4
-        id: clair
-        uses: quay/clair-action@main
-        with:
-          image-path: ./image.tar
-          format: sarif
-          output: clair_results.sarif
-          return-code: "0"   # Não falha se encontrar vulnerabilidades
+      - name: 🐘 Start PostgreSQL and Clair servers
+        run: |
+          # Inicia PostgreSQL
+          docker run -d --name clair-postgres \
+            -e POSTGRES_PASSWORD=password \
+            -e POSTGRES_USER=clair \
+            -e POSTGRES_DB=clair \
+            postgres:13
+
+          # Inicia Clair conectando ao PostgreSQL
+          docker run -d --name clair-server \
+            --link clair-postgres:postgres \
+            -p 6060:6060 \
+            -e CLAIR_DATABASE_SOURCE=postgresql://clair:password@postgres:5432/clair?sslmode=disable \
+            -e CLAIR_UPDATE_INTERVAL=12h \
+            quay.io/clair/clair:2
+
+          echo "⏳ Waiting for Clair to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:6060/health > /dev/null; then
+              echo "✅ Clair is ready"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: 📦 Download and install clair-scanner
+        run: |
+          curl -sSfL https://github.com/arminc/clair-scanner/releases/download/14.0.0/clair-scanner_linux-amd64 -o clair-scanner
+          chmod +x clair-scanner
+          sudo mv clair-scanner /usr/local/bin/
+
+      - name: 🔍 Scan with Clair
+        run: |
+          HOST_IP=$(ip -4 addr show docker0 | grep inet | awk '{print $2}' | cut -d/ -f1)
+          clair-scanner \
+            --clair=http://$HOST_IP:6060 \
+            --ip=$HOST_IP \
+            --report=clair-report.json \
+            ${{ env.IMAGE_FULL }} || true
 
       - name: 📊 Generate Clair report
         run: |
           echo "## 🔍 Clair Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f "clair_results.sarif" ]; then
-            # Extrai contagens usando jq (mais robusto)
-            CRITICAL=$(jq '[.runs[].results[]? | select(.level=="error")] | length' clair_results.sarif || echo "0")
-            HIGH=$(jq '[.runs[].results[]? | select(.level=="warning")] | length' clair_results.sarif || echo "0")
-            MEDIUM=$(jq '[.runs[].results[]? | select(.level=="note")] | length' clair_results.sarif || echo "0")
+          if [ -f "clair-report.json" ]; then
+            CRITICAL=$(jq '[.vulnerabilities[] | select(.severity=="Critical")] | length' clair-report.json || echo "0")
+            HIGH=$(jq '[.vulnerabilities[] | select(.severity=="High")] | length' clair-report.json || echo "0")
+            MEDIUM=$(jq '[.vulnerabilities[] | select(.severity=="Medium")] | length' clair-report.json || echo "0")
             echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
@@ -508,9 +540,15 @@ jobs:
         uses: actions/upload-artifact@v7.0.1
         with:
           name: clair-results
-          path: clair_results.sarif
+          path: clair-report.json
           retention-days: 7
         continue-on-error: true
+
+      - name: 🧹 Cleanup Clair containers
+        if: always()
+        run: |
+          docker stop clair-server clair-postgres || true
+          docker rm clair-server clair-postgres || true
 
   # ---------- CONTAINER-DIFF ----------
   container-diff-scan:
@@ -532,6 +570,14 @@ jobs:
       - name: 🔍 Run container-diff
         run: |
           container-diff analyze ${{ env.IMAGE_FULL }} --json > container-diff.json
+      - name: 📊 Generate container-diff report
+        run: |
+          echo "## 📦 Container-diff Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "container-diff.json" ]; then
+            PKG_COUNT=$(jq '.Image[]?.packages? | length' container-diff.json || echo "0")
+            echo "| **Total packages analyzed:** | $PKG_COUNT |" >> $GITHUB_STEP_SUMMARY
+          fi
       - name: 📤 Upload results
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -547,13 +593,34 @@ jobs:
       - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
       - name: 🔍 Run Checkov on Dockerfile
+        id: checkov
         uses: bridgecrewio/checkov-action@v12.1347.0
         with:
           directory: .
           framework: dockerfile
           output_format: json
-          output_file_path: results.json
           soft_fail: true
+      - name: 📊 Generate Checkov report
+        run: |
+          echo "## 🛡️ Checkov Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f "results.json" ]; then
+            # Extrai contagens de falhas por severidade
+            CRITICAL=$(jq '[.results.failed_checks[]? | select(.severity=="CRITICAL")] | length' results.json || echo "0")
+            HIGH=$(jq '[.results.failed_checks[]? | select(.severity=="HIGH")] | length' results.json || echo "0")
+            MEDIUM=$(jq '[.results.failed_checks[]? | select(.severity=="MEDIUM")] | length' results.json || echo "0")
+            LOW=$(jq '[.results.failed_checks[]? | select(.severity=="LOW")] | length' results.json || echo "0")
+            TOTAL_FAILED=$(jq '.results.failed_checks | length' results.json || echo "0")
+            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
+            echo "**Total failed checks:** $TOTAL_FAILED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ No results file found" >> $GITHUB_STEP_SUMMARY
+          fi
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
         with:
