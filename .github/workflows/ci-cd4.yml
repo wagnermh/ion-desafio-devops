@@ -150,6 +150,25 @@ jobs:
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
             echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
+
+            # --- Lista resumida de vulnerabilidades (IDs) ---
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📌 Vulnerabilidades encontradas (amostra)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Extrai ruleId (CVE) para cada severidade
+            for SEV in critical high medium; do
+              COUNT=$(grep -o "\"severity\":\"$SEV\"" trivy-results.sarif | wc -l)
+              if [ "$COUNT" -gt 0 ]; then
+                # Pega os primeiros 10 IDs
+                IDS=$(grep -B2 "\"severity\":\"$SEV\"" trivy-results.sarif | grep -o '"ruleId":"[^"]*"' | sed 's/"ruleId":"//;s/"//' | head -10 | paste -sd ", " -)
+                echo "**${SEV^}** ($COUNT): $IDS" >> $GITHUB_STEP_SUMMARY
+                if [ "$COUNT" -gt 10 ]; then
+                  echo "  _(+ $((COUNT - 10)) outros)_" >> $GITHUB_STEP_SUMMARY
+                fi
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
           fi
 
       - name: 📤 Upload Trivy results
@@ -234,6 +253,25 @@ jobs:
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
             echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
+
+            # --- Lista resumida de vulnerabilidades (IDs) ---
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📌 Vulnerabilidades encontradas (amostra)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Extrai vulnerability.id para cada severidade
+            for SEV in Critical High Medium; do
+              COUNT=$(grep -o "\"severity\":\"$SEV\"" grype-results.json | wc -l)
+              if [ "$COUNT" -gt 0 ]; then
+                # Pega os primeiros 10 IDs
+                IDS=$(grep -B5 "\"severity\":\"$SEV\"" grype-results.json | grep -o '"id":"[^"]*"' | sed 's/"id":"//;s/"//' | head -10 | paste -sd ", " -)
+                echo "**${SEV}** ($COUNT): $IDS" >> $GITHUB_STEP_SUMMARY
+                if [ "$COUNT" -gt 10 ]; then
+                  echo "  _(+ $((COUNT - 10)) outros)_" >> $GITHUB_STEP_SUMMARY
+                fi
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
           fi
 
       - name: 📤 Upload Grype results
@@ -452,6 +490,28 @@ jobs:
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+
+            # --- Lista resumida de vulnerabilidades (IDs) ---
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📌 Vulnerabilidades encontradas (amostra)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            for SEV in critical high medium; do
+              COUNT=$(grep -o "\"severity\":\"$SEV\"" snyk-results.json | wc -l)
+              if [ "$COUNT" -gt 0 ]; then
+                # Pega os primeiros 10 IDs (campo "id" dentro de "identifiers" ou "CVE" diretamente)
+                IDS=$(grep -B10 "\"severity\":\"$SEV\"" snyk-results.json | grep -o '"CVE-[0-9]*-[0-9]*"' | head -10 | paste -sd ", " -)
+                if [ -z "$IDS" ]; then
+                  # fallback: tenta outro campo
+                  IDS=$(grep -B10 "\"severity\":\"$SEV\"" snyk-results.json | grep -o '"id":"[^"]*"' | sed 's/"id":"//;s/"//' | head -10 | paste -sd ", " -)
+                fi
+                echo "**${SEV^}** ($COUNT): $IDS" >> $GITHUB_STEP_SUMMARY
+                if [ "$COUNT" -gt 10 ]; then
+                  echo "  _(+ $((COUNT - 10)) outros)_" >> $GITHUB_STEP_SUMMARY
+                fi
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
           fi
 
       - name: 📤 Upload Snyk results
@@ -1196,29 +1256,29 @@ jobs:
           docker rm neo4j-syft || true
 
   # ================================================================
-  # JOB 7: DIAGRAMAS (EXCALIDRAW & MERMAID) - GERAÇÃO E COMPACTAÇÃO
+  # JOB 7: DIAGRAMAS (EXCALIDRAW & MERMAID) - GERAÇÃO E COLETA
   # ================================================================
   generate-diagrams:
-    needs: [checkout-code]   # Pode rodar em paralelo com build, mas garantimos que o código foi baixado
+    needs: [checkout-code]
     runs-on: ubuntu-latest
-    if: always()  # Sempre executa, mesmo se falhar (não bloqueia o pipeline principal)
+    if: always()
     outputs:
       diagrams_generated: ${{ steps.check-diagrams.outputs.generated }}
     steps:
       - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
 
-      - name: 🔎 Check for diagram source files
+      - name: 🔎 Procurar fontes e imagens de diagramas
         id: check-diagrams
         run: |
-          # Define os diretórios onde podem estar os diagramas (ajuste conforme seu projeto)
-          DIAGRAM_DIRS="docs/diagrams diagrams ."
+          # Define diretórios comuns para diagramas
+          DIAGRAM_DIRS="docs/diagrams diagrams docs ."
           FOUND_SOURCE=false
+          FOUND_IMAGES=false
           
+          # Procura por arquivos fonte
           for dir in $DIAGRAM_DIRS; do
             if [ -d "$dir" ]; then
-              echo "📁 Checking $dir for diagrams..."
-              # Procura por arquivos .mmd e .excalidraw
               if find "$dir" -maxdepth 3 \( -name "*.mmd" -o -name "*.excalidraw" \) | grep -q .; then
                 echo "✅ Found diagram source files in $dir"
                 FOUND_SOURCE=true
@@ -1227,39 +1287,53 @@ jobs:
             fi
           done
           
-          if [ "$FOUND_SOURCE" = true ]; then
+          # Procura por imagens já renderizadas (PNG, SVG)
+          for dir in $DIAGRAM_DIRS; do
+            if [ -d "$dir" ]; then
+              if find "$dir" -maxdepth 3 \( -name "*.png" -o -name "*.svg" \) | grep -q .; then
+                echo "✅ Found existing diagram images in $dir"
+                FOUND_IMAGES=true
+                break
+              fi
+            fi
+          done
+          
+          if [ "$FOUND_SOURCE" = true ] || [ "$FOUND_IMAGES" = true ]; then
             echo "generated=true" >> $GITHUB_OUTPUT
-            echo "✅ Diagram sources found – will render and package."
+            echo "✅ Diagram assets found (source or images)."
           else
             echo "generated=false" >> $GITHUB_OUTPUT
-            echo "⚠️ No .mmd or .excalidraw files found – skipping diagram rendering."
+            echo "⚠️ No diagram sources or images found – skipping diagram processing."
           fi
 
-      - name: 📦 Install Node.js (for mermaid-cli and excalidraw-cli)
+      - name: 📦 Install Node.js (para renderização)
         if: steps.check-diagrams.outputs.generated == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: 🖼️ Install Mermaid CLI and Excalidraw CLI
+      - name: 🖼️ Install Mermaid CLI e Excalidraw CLI (se houver fontes)
         if: steps.check-diagrams.outputs.generated == 'true'
         run: |
-          npm install -g @mermaid-js/mermaid-cli excalidraw-cli
+          # Verifica se há arquivos fonte antes de instalar as ferramentas
+          if find . -type f \( -name "*.mmd" -o -name "*.excalidraw" \) | grep -q .; then
+            npm install -g @mermaid-js/mermaid-cli excalidraw-cli
+          else
+            echo "No source files found, skipping installation."
+          fi
 
-      - name: 🎨 Render Mermaid diagrams (.mmd -> .png)
+      - name: 🎨 Renderizar diagramas (se houver fontes)
         if: steps.check-diagrams.outputs.generated == 'true'
         run: |
-          # Procura recursivamente por arquivos .mmd
+          # Renderiza Mermaid
           find . -type f -name "*.mmd" | while read -r file; do
             dir=$(dirname "$file")
             base=$(basename "$file" .mmd)
             echo "🔄 Rendering Mermaid: $file -> $dir/${base}.png"
             mmdc -i "$file" -o "$dir/${base}.png" || echo "⚠️ Failed to render $file"
           done
-
-      - name: 🎨 Render Excalidraw diagrams (.excalidraw -> .png)
-        if: steps.check-diagrams.outputs.generated == 'true'
-        run: |
+          
+          # Renderiza Excalidraw
           find . -type f -name "*.excalidraw" | while read -r file; do
             dir=$(dirname "$file")
             base=$(basename "$file" .excalidraw)
@@ -1267,48 +1341,83 @@ jobs:
             excalidraw-cli render "$file" --output "$dir/${base}.png" || echo "⚠️ Failed to render $file"
           done
 
-      - name: 📤 Upload rendered diagram images (se houver)
+      - name: 📤 Coletar e enviar imagens de diagramas
+        if: steps.check-diagrams.outputs.generated == 'true'
+        run: |
+          # Cria um diretório para coletar as imagens
+          mkdir -p diagram_images
+          
+          # Copia todas as imagens .png e .svg encontradas nos diretórios comuns
+          DIAGRAM_DIRS="docs/diagrams diagrams docs ."
+          for dir in $DIAGRAM_DIRS; do
+            if [ -d "$dir" ]; then
+              find "$dir" -maxdepth 3 \( -name "*.png" -o -name "*.svg" \) -exec cp {} diagram_images/ \; 2>/dev/null || true
+            fi
+          done
+          
+          # Remove duplicatas (mantém a primeira encontrada)
+          ls diagram_images/* 2>/dev/null | sort -u | while read -r file; do
+            base=$(basename "$file")
+            # Se já existe um arquivo com o mesmo nome, mantém o primeiro
+            if [ -f "diagram_images/$base" ] && [ "diagram_images/$base" != "$file" ]; then
+              rm -f "$file"
+            fi
+          done
+          
+          echo "📊 Total de imagens coletadas: $(ls diagram_images/ 2>/dev/null | wc -l)"
+
+      - name: 📤 Upload imagens de diagramas (se houver)
         if: steps.check-diagrams.outputs.generated == 'true'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: diagram-images
-          path: |
-            **/*.png
-            !**/node_modules/**
+          path: diagram_images/
           retention-days: 7
-          # Isso fará upload de todos os .png encontrados, mas cuidado para não incluir outros .png indesejados.
-          # Pode-se restringir a pastas específicas, ex.: docs/diagrams/*.png
 
   # ================================================================
   # JOB 8: EMPACOTAR DIAGRAMAS E EXIBIR NO SUMMARY
   # ================================================================
   package-diagrams:
-    needs: [generate-diagrams]   # Depende da geração
+    needs: [generate-diagrams]
     runs-on: ubuntu-latest
-    if: always()  # Executa mesmo se a geração falhou ou não houve fontes
+    if: always()
     steps:
-      - name: 📥 Download diagram images (se gerados)
+      - name: 📥 Baixar artefato de imagens (se existir)
         uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: diagram-images
-          path: ./diagrams
+          path: ./diagram_images
 
-      - name: 🔎 Verificar se há imagens baixadas
+      - name: 🔍 Verificar se há imagens
         id: check-images
         run: |
-          if [ -d "./diagrams" ] && [ "$(ls -A ./diagrams 2>/dev/null)" ]; then
-            echo "✅ Found diagram images."
+          # Se o artefato não foi baixado, tenta buscar no workspace (fallback)
+          if [ ! -d "./diagram_images" ] || [ -z "$(ls -A ./diagram_images 2>/dev/null)" ]; then
+            echo "⚠️ Nenhuma imagem baixada. Tentando buscar localmente..."
+            mkdir -p diagram_images
+            DIAGRAM_DIRS="docs/diagrams diagrams docs ."
+            for dir in $DIAGRAM_DIRS; do
+              if [ -d "$dir" ]; then
+                find "$dir" -maxdepth 3 \( -name "*.png" -o -name "*.svg" \) -exec cp {} diagram_images/ \; 2>/dev/null || true
+              fi
+            done
+          fi
+          
+          if [ -d "./diagram_images" ] && [ "$(ls -A ./diagram_images 2>/dev/null)" ]; then
+            echo "✅ Encontradas $(ls ./diagram_images | wc -l) imagens."
             echo "has_images=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ No diagram images found."
+            echo "⚠️ Nenhuma imagem de diagrama encontrada."
             echo "has_images=false" >> $GITHUB_OUTPUT
           fi
 
       - name: 📦 Compactar imagens em diagrams.zip
         if: steps.check-images.outputs.has_images == 'true'
         run: |
-          zip -r diagrams.zip ./diagrams
+          cd diagram_images
+          zip -r ../diagrams.zip *
+          cd ..
           echo "ZIP_SIZE=$(du -sh diagrams.zip | cut -f1)" >> $GITHUB_ENV
 
       - name: 📤 Upload diagrams.zip como artefato
@@ -1326,18 +1435,24 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "📦 **Pacote completo:** [diagrams.zip](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Miniaturas" >> $GITHUB_STEP_SUMMARY
+          echo "### Miniaturas (imagens ≤ 1 MB)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Encontra e codifica as imagens em Base64
-          find ./diagrams -type f \( -name "*.png" -o -name "*.svg" \) | while read -r img; do
-            # Gera um título a partir do nome do arquivo
-            filename=$(basename "$img")
-            echo "**$filename**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            # Codifica e insere como imagem inline
-            base64 -w0 "$img" | { echo -n '<img src="data:image/png;base64,'; cat; echo '" width="400" />'; } >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+          # Itera sobre as imagens, codifica e exibe as que têm até 1 MB
+          find ./diagram_images -type f \( -name "*.png" -o -name "*.svg" \) | while read -r img; do
+            # Verifica o tamanho do arquivo (em bytes)
+            size=$(stat -c%s "$img" 2>/dev/null || stat -f%z "$img" 2>/dev/null)
+            if [ "$size" -le 1048576 ]; then  # 1 MB
+              filename=$(basename "$img")
+              echo "**$filename**" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              # Codifica e insere como imagem inline (largura máxima 400px)
+              base64 -w0 "$img" | { echo -n '<img src="data:image/png;base64,'; cat; echo '" width="400" />'; } >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "⚠️ Imagem muito grande para miniatura: $(basename "$img") ($(du -h "$img" | cut -f1)) – disponível apenas no .zip" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
           done
 
       - name: ⚠️ Aviso se nenhum diagrama foi encontrado
@@ -1345,7 +1460,7 @@ jobs:
         run: |
           echo "## 🖼️ Diagramas" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ Nenhum diagrama (Excalidraw ou Mermaid) foi encontrado ou gerado." >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Nenhum diagrama (Excalidraw ou Mermaid) foi encontrado." >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
   # JOB 9: PUSH DA IMAGEM PARA O REGISTRY (SÓ SE APROVADO)
@@ -1472,7 +1587,7 @@ jobs:
             echo "| **6. Push to Registry** | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Diagramas (adicionado)
+          # Diagramas
           if [ "${{ needs.package-diagrams.result }}" == "success" ]; then
             echo "| **7. Diagramas (Excalidraw/Mermaid)** | ✅ Processado |" >> $GITHUB_STEP_SUMMARY
           elif [ "${{ needs.package-diagrams.result }}" == "skipped" ]; then
@@ -1487,7 +1602,7 @@ jobs:
           echo "| **Image** | ${{ env.IMAGE_FULL }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Tag** | ${{ env.IMAGE_TAG }} |" >> $GITHUB_STEP_SUMMARY
           
-          # Vulnerability summary
+          # Vulnerability summary (já inclui listas nos jobs individuais)
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🔒 Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -1517,7 +1632,6 @@ jobs:
             echo "- **Syft Analysis**: Dependency tree and package relationships" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Nota sobre diagramas (já adicionados pelo job package-diagrams, mas podemos reforçar)
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "📌 **Os diagramas (Excalidraw/Mermaid) foram processados e estão disponíveis na seção acima.**" >> $GITHUB_STEP_SUMMARY
