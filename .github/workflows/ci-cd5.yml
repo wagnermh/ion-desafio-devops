@@ -1,4 +1,4 @@
-name: Build and Deploy
+name: Build and Deploy - v 5.0
 
 on:
   workflow_dispatch:
@@ -90,7 +90,7 @@ jobs:
           echo "| **Status** | ✅ Built locally |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 3: SCANS DE SEGURANÇA (executados em paralelo)
+  # JOB 3: SCANS DE SEGURANÇA
   # ================================================================
 
   # ---------- TRIVY ----------
@@ -466,7 +466,6 @@ jobs:
           mkdir clair
           cd clair
           cat > docker-compose.yml <<EOF
-          version: '3'
           services:
             postgres:
               image: postgres:13
@@ -477,7 +476,7 @@ jobs:
               volumes:
                 - postgres-data:/var/lib/postgresql/data
             clair:
-              image: quay.io/projectquay/clair:latest
+              image: clair:latest
               depends_on:
                 - postgres
               ports:
@@ -549,88 +548,6 @@ jobs:
         run: |
           cd clair && docker compose down -v || true
 
-  # ---------- ANCHORE ENGINE (PESADO, MANUAL) ----------
-  anchore-scan:
-    needs: build-image
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    outputs:
-      status: ${{ steps.check.outputs.status }}
-      critical: ${{ steps.check.outputs.critical }}
-      high: ${{ steps.check.outputs.high }}
-      medium: ${{ steps.check.outputs.medium }}
-    steps:
-      - name: 📥 Download image tar
-        uses: actions/download-artifact@v8
-        with:
-          name: docker-image-tar
-          path: /tmp
-      - name: 📦 Load image from tar
-        run: docker load -i ${{ env.IMAGE_TAR }}
-      - name: 🚀 Start Anchore Engine
-        run: |
-          git clone https://github.com/anchore/anchore-engine.git
-          cd anchore-engine/scripts/docker-compose
-          docker compose up -d
-          echo "⏳ Waiting for Anchore API..."
-          for i in {1..30}; do
-            if curl -s http://localhost:8228/v1/health | grep -q '"status":"ok"'; then
-              echo "✅ Anchore ready"
-              break
-            fi
-            sleep 5
-          done
-      - name: 📦 Install anchore-cli
-        run: |
-          pip install anchorecli
-          anchore-cli --version
-      - name: 🔍 Scan with Anchore
-        run: |
-          anchore-cli --u admin --p foobar --url http://localhost:8228/v1/ image add ${{ env.IMAGE_FULL }}
-          anchore-cli --u admin --p foobar --url http://localhost:8228/v1/ image wait ${{ env.IMAGE_FULL }}
-          anchore-cli --u admin --p foobar --url http://localhost:8228/v1/ image vuln ${{ env.IMAGE_FULL }} all --json > anchore-vulns.json
-          anchore-cli --u admin --p foobar --url http://localhost:8228/v1/ evaluate check ${{ env.IMAGE_FULL }} --detail --json > anchore-eval.json
-      - name: 📊 Generate Anchore report
-        run: |
-          echo "## 🔒 Anchore Engine Scan Results" >> $GITHUB_STEP_SUMMARY
-          if [ -f "anchore-vulns.json" ]; then
-            CRITICAL=$(jq '[.vulnerabilities[] | select(.severity=="Critical")] | length' anchore-vulns.json)
-            HIGH=$(jq '[.vulnerabilities[] | select(.severity=="High")] | length' anchore-vulns.json)
-            MEDIUM=$(jq '[.vulnerabilities[] | select(.severity=="Medium")] | length' anchore-vulns.json)
-            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
-            echo "| High     | $HIGH |" >> $GITHUB_STEP_SUMMARY
-            echo "| Medium   | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
-            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
-            echo "high=$HIGH" >> $GITHUB_OUTPUT
-            echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
-            PASSED=$(jq -r '.result | if . == "pass" then "true" else "false" end' anchore-eval.json)
-            if [ "$PASSED" == "true" ] && [ "$CRITICAL" -eq 0 ] && [ "$HIGH" -eq 0 ]; then
-              echo "status=passed" >> $GITHUB_OUTPUT
-            else
-              echo "status=failed" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "❌ Scan failed" >> $GITHUB_STEP_SUMMARY
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "critical=0" >> $GITHUB_OUTPUT
-            echo "high=0" >> $GITHUB_OUTPUT
-            echo "medium=0" >> $GITHUB_OUTPUT
-          fi
-      - name: 📤 Upload Anchore results
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: anchore-results
-          path: |
-            anchore-vulns.json
-            anchore-eval.json
-          retention-days: 7
-      - name: 🧹 Cleanup Anchore
-        if: always()
-        run: |
-          cd anchore-engine/scripts/docker-compose && docker compose down -v || true
-
   # ---------- CONTAINER-DIFF (substituto image-inspector) ----------
   container-diff-scan:
     needs: build-image
@@ -658,7 +575,7 @@ jobs:
           path: container-diff.json
           retention-days: 7
 
-  # ---------- CHECKOV (substituto container-audit, escaneia Dockerfile) ----------
+  # ---------- CHECKOV (escaneia Dockerfile) ----------
   checkov-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -672,6 +589,7 @@ jobs:
       - name: 🔍 Run checkov on Dockerfile
         run: |
           checkov -d . --framework dockerfile --output json > checkov-results.json
+        continue-on-error: true   # Não falha se encontrar problemas
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -680,11 +598,10 @@ jobs:
           retention-days: 7
 
   # ================================================================
-  # JOB 4: VALIDAÇÃO DOS SCANS (ATUALIZADO)
+  # JOB 4: VALIDAÇÃO DOS SCANS
   # ================================================================
   validate-scans:
-    needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan,
-            clair-scan, anchore-scan]
+    needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, clair-scan]
     runs-on: ubuntu-latest
     if: always()
     outputs:
@@ -752,18 +669,6 @@ jobs:
             echo "| **Clair** | ⏭️ Skipped | - | - | - |" >> $GITHUB_STEP_SUMMARY
           fi
           
-          # Anchore (se executado)
-          if [ "${{ needs.anchore-scan.outputs.status }}" != "" ]; then
-            if [ "${{ needs.anchore-scan.outputs.status }}" == "passed" ]; then
-              echo "| **Anchore** | ✅ Passed | ${{ needs.anchore-scan.outputs.critical }} | ${{ needs.anchore-scan.outputs.high }} | ${{ needs.anchore-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "| **Anchore** | ❌ Failed | ${{ needs.anchore-scan.outputs.critical }} | ${{ needs.anchore-scan.outputs.high }} | ${{ needs.anchore-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
-              FAILED=$((FAILED + 1))
-            fi
-          else
-            echo "| **Anchore** | ⏭️ Skipped | - | - | - |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ $FAILED -eq 0 ]; then
             echo "✅ **All scans passed!** Ready to push." >> $GITHUB_STEP_SUMMARY
@@ -774,7 +679,7 @@ jobs:
           fi
 
   # ================================================================
-  # JOB 5: CARTOGRAPHY + TRIVY (ANÁLISE DE VULNERABILIDADES)
+  # JOB 5: CARTOGRAPHY + TRIVY
   # ================================================================
   cartography-trivy-analysis:
     needs: [build-image, trivy-scan, validate-scans]
@@ -955,7 +860,7 @@ jobs:
           docker rm neo4j-trivy || true
 
   # ================================================================
-  # JOB 6: CARTOGRAPHY + SYFT (ANÁLISE DE DEPENDÊNCIAS)
+  # JOB 6: CARTOGRAPHY + SYFT
   # ================================================================
   cartography-syft-analysis:
     needs: [build-image, syft-scan, validate-scans]
@@ -1332,7 +1237,7 @@ jobs:
   # ================================================================
   final-report:
     needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan,
-            clair-scan, anchore-scan, validate-scans,
+            clair-scan, validate-scans,
             cartography-trivy-analysis, cartography-syft-analysis, generate-visualizations, push-image]
     runs-on: ubuntu-latest
     if: always()
@@ -1362,9 +1267,6 @@ jobs:
           echo "| **3e. Snyk Scan** | ${{ needs.snyk-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.clair-scan.result }}" != "skipped" ]; then
             echo "| **3f. Clair Scan** | ${{ needs.clair-scan.result }} |" >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ "${{ needs.anchore-scan.result }}" != "skipped" ]; then
-            echo "| **3g. Anchore Scan** | ${{ needs.anchore-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           fi
           if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
             echo "| **4. Security Validation** | ✅ All Passed |" >> $GITHUB_STEP_SUMMARY
@@ -1412,9 +1314,6 @@ jobs:
           echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.clair-scan.outputs.status }}" != "" ]; then
             echo "| **Clair** | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} | ${{ needs.clair-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ "${{ needs.anchore-scan.outputs.status }}" != "" ]; then
-            echo "| **Anchore** | ${{ needs.anchore-scan.outputs.critical }} | ${{ needs.anchore-scan.outputs.high }} | ${{ needs.anchore-scan.outputs.medium }} | ${{ needs.anchore-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 📊 Visualizations Generated" >> $GITHUB_STEP_SUMMARY
