@@ -447,7 +447,7 @@ jobs:
             echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
-  # ---------- CLAIR (PESADO, MANUAL) ----------
+  # ---------- CLAIR (SEM DOCKER-COMPOSE, USANDO DOCKER RUN) ----------
   clair-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -465,33 +465,23 @@ jobs:
           path: /tmp
       - name: 📦 Load image from tar
         run: docker load -i ${{ env.IMAGE_TAR }}
-      - name: 🐘 Start Clair with PostgreSQL (docker compose)
+      - name: 🐘 Start Clair server with PostgreSQL (docker run)
         run: |
-          mkdir clair
-          cd clair
-          cat > docker-compose.yml <<EOF
-          services:
-            postgres:
-              image: postgres:13
-              environment:
-                POSTGRES_PASSWORD: password
-                POSTGRES_USER: clair
-                POSTGRES_DB: clair
-              volumes:
-                - postgres-data:/var/lib/postgresql/data
-            clair:
-              image: quay.io/clair/clair:2
-              depends_on:
-                - postgres
-              ports:
-                - "6060:6060"
-              environment:
-                CLAIR_DATABASE_SOURCE: postgresql://clair:password@postgres:5432/clair?sslmode=disable
-                CLAIR_UPDATE_INTERVAL: 12h
-          volumes:
-            postgres-data:
-          EOF
-          docker compose up -d
+          # Inicia o PostgreSQL
+          docker run -d --name clair-postgres \
+            -e POSTGRES_PASSWORD=password \
+            -e POSTGRES_USER=clair \
+            -e POSTGRES_DB=clair \
+            postgres:13
+          
+          # Inicia o Clair conectando ao PostgreSQL
+          docker run -d --name clair-server \
+            --link clair-postgres:postgres \
+            -p 6060:6060 \
+            -e CLAIR_DATABASE_SOURCE=postgresql://clair:password@postgres:5432/clair?sslmode=disable \
+            -e CLAIR_UPDATE_INTERVAL=12h \
+            quay.io/clair/clair:2
+          
           echo "⏳ Waiting for Clair to be ready..."
           for i in {1..30}; do
             if curl -s http://localhost:6060/health > /dev/null; then
@@ -500,7 +490,7 @@ jobs:
             fi
             sleep 5
           done
-      - name: 📦 Install clair-scanner (versão 14.0.0)
+      - name: 📦 Download and install clair-scanner (versão 14.0.0)
         run: |
           curl -sSfL https://github.com/arminc/clair-scanner/releases/download/14.0.0/clair-scanner_linux-amd64 -o clair-scanner
           chmod +x clair-scanner
@@ -548,10 +538,11 @@ jobs:
           path: clair-report.json
           retention-days: 7
         continue-on-error: true
-      - name: 🧹 Cleanup Clair
+      - name: 🧹 Cleanup Clair containers
         if: always()
         run: |
-          cd clair && docker compose down -v || true
+          docker stop clair-server clair-postgres || true
+          docker rm clair-server clair-postgres || true
 
   # ---------- CONTAINER-DIFF ----------
   container-diff-scan:
@@ -593,7 +584,7 @@ jobs:
           directory: .
           framework: dockerfile
           output_format: json
-          output_file_path: results.json   # <-- FORÇA O NOME DO ARQUIVO
+          output_file_path: results.json
           soft_fail: true
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
@@ -601,7 +592,7 @@ jobs:
           name: checkov-results
           path: results.json
           retention-days: 7
-        continue-on-error: true   # Não falha se o arquivo não existir
+        continue-on-error: true
 
   # ================================================================
   # JOB 4: VALIDAÇÃO DOS SCANS
