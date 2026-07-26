@@ -93,7 +93,7 @@ jobs:
   # JOB 3: SCANS DE SEGURANÇA
   # ================================================================
 
-  # ---------- TRIVY ----------
+  # ---------- TRIVY (INSTALAÇÃO VIA SHELL) ----------
   trivy-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -113,40 +113,46 @@ jobs:
           echo "📦 Loading image from ${{ env.IMAGE_TAR }}"
           docker load -i ${{ env.IMAGE_TAR }}
           docker images
+      - name: 📦 Install Trivy (via shell)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy --version
       - name: 🔒 Scan with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.IMAGE_FULL }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+        run: |
+          trivy image --format sarif --output trivy-results.sarif ${{ env.IMAGE_FULL }}
+          trivy image --format json --output trivy-results.json ${{ env.IMAGE_FULL }}
       - name: 📊 Generate Trivy report
         run: |
           echo "## 🔒 Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          if [ -f "trivy-results.sarif" ]; then
-            CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
-            HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
-            MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
-            LOW=$(grep -o '"severity":"low"' trivy-results.sarif | wc -l || echo "0")
+          if [ -f "trivy-results.json" ]; then
+            CRITICAL=$(jq '.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")' trivy-results.json | wc -l || echo "0")
+            HIGH=$(jq '.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")' trivy-results.json | wc -l || echo "0")
+            MEDIUM=$(jq '.Results[].Vulnerabilities[]? | select(.Severity=="MEDIUM")' trivy-results.json | wc -l || echo "0")
+            LOW=$(jq '.Results[].Vulnerabilities[]? | select(.Severity=="LOW")' trivy-results.json | wc -l || echo "0")
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
             echo "**Total:** $((CRITICAL + HIGH + MEDIUM + LOW))" >> $GITHUB_STEP_SUMMARY
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+            echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
           fi
       - name: 📤 Upload Trivy results
         uses: actions/upload-artifact@v7.0.1
         with:
           name: trivy-scan-results
-          path: trivy-results.sarif
+          path: |
+            trivy-results.sarif
+            trivy-results.json
           retention-days: 7
       - name: ✅ Check scan status
         id: check
         run: |
-          if [ ! -f "trivy-results.sarif" ]; then
+          if [ ! -f "trivy-results.json" ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             echo "critical=0" >> $GITHUB_OUTPUT
             echo "high=0" >> $GITHUB_OUTPUT
@@ -154,12 +160,10 @@ jobs:
             echo "❌ Scan failed - no results file"
             exit 0
           fi
-          CRITICAL=$(grep -o '"severity":"critical"' trivy-results.sarif | wc -l || echo "0")
-          HIGH=$(grep -o '"severity":"high"' trivy-results.sarif | wc -l || echo "0")
-          MEDIUM=$(grep -o '"severity":"medium"' trivy-results.sarif | wc -l || echo "0")
+          CRITICAL=$(jq '.Results[].Vulnerabilities[]? | select(.Severity=="CRITICAL")' trivy-results.json | wc -l || echo "0")
+          HIGH=$(jq '.Results[].Vulnerabilities[]? | select(.Severity=="HIGH")' trivy-results.json | wc -l || echo "0")
           echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
           echo "high=$HIGH" >> $GITHUB_OUTPUT
-          echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
             echo "status=failed" >> $GITHUB_OUTPUT
             echo "❌ Found $CRITICAL CRITICAL and $HIGH HIGH vulnerabilities!"
@@ -443,7 +447,7 @@ jobs:
             echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
-  # ---------- CLAIR (PESADO, MANUAL, OPCIONAL) ----------
+  # ---------- CLAIR (PESADO, MANUAL) ----------
   clair-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -462,7 +466,6 @@ jobs:
       - name: 📦 Load image from tar
         run: docker load -i ${{ env.IMAGE_TAR }}
       - name: 🐘 Start Clair with PostgreSQL (docker compose)
-        continue-on-error: true   # Não quebra a pipeline se falhar (ex: rate limit)
         run: |
           mkdir clair
           cd clair
@@ -497,9 +500,9 @@ jobs:
             fi
             sleep 5
           done
-      - name: 📦 Install clair-scanner
+      - name: 📦 Install clair-scanner (versão 14.0.0)
         run: |
-          curl -sSfL https://github.com/arminc/clair-scanner/releases/latest/download/clair-scanner_linux_amd64 -o clair-scanner
+          curl -sSfL https://github.com/arminc/clair-scanner/releases/download/14.0.0/clair-scanner_linux-amd64 -o clair-scanner
           chmod +x clair-scanner
           sudo mv clair-scanner /usr/local/bin/
       - name: 🔍 Scan with Clair
@@ -590,7 +593,7 @@ jobs:
           directory: .
           framework: dockerfile
           output_format: json
-          soft_fail: true   # não falha mesmo com violações
+          soft_fail: true
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
         with:
