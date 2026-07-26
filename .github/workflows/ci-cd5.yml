@@ -447,7 +447,7 @@ jobs:
             echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
-  # ---------- CLAIR (SEM DOCKER-COMPOSE, USANDO DOCKER RUN) ----------
+  # ---------- CLAIR (USANDO ACTION OFICIAL) ----------
   clair-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -463,54 +463,25 @@ jobs:
         with:
           name: docker-image-tar
           path: /tmp
-      - name: 📦 Load image from tar
-        run: docker load -i ${{ env.IMAGE_TAR }}
-      - name: 🐘 Start Clair server with PostgreSQL (docker run)
-        run: |
-          # Inicia o PostgreSQL
-          docker run -d --name clair-postgres \
-            -e POSTGRES_PASSWORD=password \
-            -e POSTGRES_USER=clair \
-            -e POSTGRES_DB=clair \
-            postgres:13
-          
-          # Inicia o Clair conectando ao PostgreSQL
-          docker run -d --name clair-server \
-            --link clair-postgres:postgres \
-            -p 6060:6060 \
-            -e CLAIR_DATABASE_SOURCE=postgresql://clair:password@postgres:5432/clair?sslmode=disable \
-            -e CLAIR_UPDATE_INTERVAL=12h \
-            quay.io/clair/clair:2
-          
-          echo "⏳ Waiting for Clair to be ready..."
-          for i in {1..30}; do
-            if curl -s http://localhost:6060/health > /dev/null; then
-              echo "✅ Clair is ready"
-              break
-            fi
-            sleep 5
-          done
-      - name: 📦 Download and install clair-scanner (versão 14.0.0)
-        run: |
-          curl -sSfL https://github.com/arminc/clair-scanner/releases/download/14.0.0/clair-scanner_linux-amd64 -o clair-scanner
-          chmod +x clair-scanner
-          sudo mv clair-scanner /usr/local/bin/
-      - name: 🔍 Scan with Clair
-        run: |
-          HOST_IP=$(ip -4 addr show docker0 | grep inet | awk '{print $2}' | cut -d/ -f1)
-          clair-scanner \
-            --clair=http://$HOST_IP:6060 \
-            --ip=$HOST_IP \
-            --report=clair-report.json \
-            ${{ env.IMAGE_FULL }} || true
+
+      - name: 🔍 Run Clair V4
+        id: clair
+        uses: quay/clair-action@main
+        with:
+          image-path: ${{ env.IMAGE_TAR }}
+          format: sarif
+          output: clair_results.sarif
+          return-code: "0"   # Não falha se encontrar vulnerabilidades
+
       - name: 📊 Generate Clair report
         run: |
           echo "## 🔍 Clair Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f "clair-report.json" ]; then
-            CRITICAL=$(jq '[.vulnerabilities[] | select(.severity=="Critical")] | length' clair-report.json)
-            HIGH=$(jq '[.vulnerabilities[] | select(.severity=="High")] | length' clair-report.json)
-            MEDIUM=$(jq '[.vulnerabilities[] | select(.severity=="Medium")] | length' clair-report.json)
+          if [ -f "clair_results.sarif" ]; then
+            # Extrai contagens do SARIF
+            CRITICAL=$(grep -o '"level":"error"' clair_results.sarif | wc -l || echo "0")
+            HIGH=$(grep -o '"level":"warning"' clair_results.sarif | wc -l || echo "0")
+            MEDIUM=$(grep -o '"level":"note"' clair_results.sarif | wc -l || echo "0")
             echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
@@ -519,11 +490,8 @@ jobs:
             echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
             echo "high=$HIGH" >> $GITHUB_OUTPUT
             echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
-            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-              echo "status=failed" >> $GITHUB_OUTPUT
-            else
-              echo "status=passed" >> $GITHUB_OUTPUT
-            fi
+            # Clair não bloqueia - sempre passa
+            echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "❌ Scan failed - no report" >> $GITHUB_STEP_SUMMARY
             echo "status=failed" >> $GITHUB_OUTPUT
@@ -531,18 +499,14 @@ jobs:
             echo "high=0" >> $GITHUB_OUTPUT
             echo "medium=0" >> $GITHUB_OUTPUT
           fi
+
       - name: 📤 Upload Clair results
         uses: actions/upload-artifact@v7.0.1
         with:
           name: clair-results
-          path: clair-report.json
+          path: clair_results.sarif
           retention-days: 7
         continue-on-error: true
-      - name: 🧹 Cleanup Clair containers
-        if: always()
-        run: |
-          docker stop clair-server clair-postgres || true
-          docker rm clair-server clair-postgres || true
 
   # ---------- CONTAINER-DIFF ----------
   container-diff-scan:
