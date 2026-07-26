@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.25.9-alpine AS builder
+FROM golang:1.24.11-alpine3.21 AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY src/main.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o main .
 
 # Stage final - imagem mínima
-FROM alpine:3.21
+FROM alpine:3.20
 
 # Instala apenas o necessário e configura usuário não-root
 RUN addgroup -g 1000 appuser && \
