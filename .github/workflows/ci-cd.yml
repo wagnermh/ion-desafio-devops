@@ -1,6 +1,8 @@
 # .github/workflows/ci-cd.yml
 name: Build and Deploy - v 1.0
 
+on:
+  workflow_dispatch:
 #on:
 #  push:
 #    branches: [ main ]
