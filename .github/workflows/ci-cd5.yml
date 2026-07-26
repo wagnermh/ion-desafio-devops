@@ -583,10 +583,17 @@ jobs:
           path: container-diff.json
           retention-days: 7
 
-  # ---------- CHECKOV (USANDO INSTALAÇÃO VIA PIP + JSON OUTPUT) ----------
+  # ---------- CHECKOV (COM OUTPUTS PARA CONSOLIDAÇÃO) ----------
   checkov-scan:
     needs: build-image
     runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+      critical: ${{ steps.check.outputs.critical }}
+      high: ${{ steps.check.outputs.high }}
+      medium: ${{ steps.check.outputs.medium }}
+      passed: ${{ steps.check.outputs.passed }}
+      failed: ${{ steps.check.outputs.failed }}
     steps:
       - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
@@ -601,6 +608,7 @@ jobs:
           checkov -d . --framework dockerfile --output json --soft-fail > checkov-results.json
 
       - name: 📊 Generate Checkov report
+        id: check
         run: |
           echo "## 🛡️ Checkov Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -631,8 +639,23 @@ jobs:
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
+            
+            # Define outputs para consolidação
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
+            echo "failed=$FAILED" >> $GITHUB_OUTPUT
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+            echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+            # Checkov sempre passa (soft-fail)
+            echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "⚠️ No results file found" >> $GITHUB_STEP_SUMMARY
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+            echo "medium=0" >> $GITHUB_OUTPUT
+            echo "passed=0" >> $GITHUB_OUTPUT
+            echo "failed=0" >> $GITHUB_OUTPUT
           fi
 
       - name: 📤 Upload checkov results
@@ -644,7 +667,7 @@ jobs:
         continue-on-error: true
 
   # ================================================================
-  # JOB 4: VALIDAÇÃO DOS SCANS
+  # JOB 4: VALIDAÇÃO DOS SCANS (COM CHECKOV CONSOLIDADO)
   # ================================================================
   validate-scans:
     needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, clair-scan,
@@ -718,8 +741,8 @@ jobs:
           # Container-diff (informativo)
           echo "| **Container-diff** | ✅ Executado (informações) | - | - | - |" >> $GITHUB_STEP_SUMMARY
           
-          # Checkov (informativo)
-          echo "| **Checkov** | ✅ Executado (soft-fail) | - | - | - |" >> $GITHUB_STEP_SUMMARY
+          # Checkov (com valores consolidados)
+          echo "| **Checkov** | ✅ Executado (soft-fail) | ${{ needs.checkov-scan.outputs.critical }} | ${{ needs.checkov-scan.outputs.high }} | ${{ needs.checkov-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ $FAILED -eq 0 ]; then
@@ -1285,7 +1308,7 @@ jobs:
           echo "| **Push Status** | ✅ Success |" >> $GITHUB_STEP_SUMMARY
 
   # ================================================================
-  # JOB 9: RELATÓRIO FINAL
+  # JOB 9: RELATÓRIO FINAL (COM CHECKOV CONSOLIDADO)
   # ================================================================
   final-report:
     needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan,
@@ -1366,6 +1389,7 @@ jobs:
           echo "| **Trivy** | ${{ needs.trivy-scan.outputs.critical }} | ${{ needs.trivy-scan.outputs.high }} | ${{ needs.trivy-scan.outputs.medium }} | ${{ needs.trivy-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Grype** | ${{ needs.grype-scan.outputs.critical }} | ${{ needs.grype-scan.outputs.high }} | ${{ needs.grype-scan.outputs.medium }} | ${{ needs.grype-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Snyk** | ${{ needs.snyk-scan.outputs.critical }} | ${{ needs.snyk-scan.outputs.high }} | ${{ needs.snyk-scan.outputs.medium }} | ${{ needs.snyk-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Checkov** | ${{ needs.checkov-scan.outputs.critical }} | ${{ needs.checkov-scan.outputs.high }} | ${{ needs.checkov-scan.outputs.medium }} | ${{ needs.checkov-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.clair-scan.outputs.status }}" != "" ]; then
             echo "| **Clair** | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} | ${{ needs.clair-scan.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
           fi
