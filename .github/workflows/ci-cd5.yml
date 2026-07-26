@@ -3,7 +3,7 @@ name: Build and Deploy - v 5.0
 on:
   workflow_dispatch:
 
-  env:
+env:
   IMAGE_NAME: ion-desafio-devops-app
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
