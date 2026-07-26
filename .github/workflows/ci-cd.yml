@@ -1,5 +1,5 @@
 # .github/workflows/ci-cd.yml
-name: Build and Deploy
+name: Build and Deploy - v 1.0
 
 #on:
 #  push:
