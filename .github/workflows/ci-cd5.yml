@@ -476,7 +476,7 @@ jobs:
               volumes:
                 - postgres-data:/var/lib/postgresql/data
             clair:
-              image: clair:latest
+              image: quay.io/clair/clair:latest
               depends_on:
                 - postgres
               ports:
@@ -548,7 +548,7 @@ jobs:
         run: |
           cd clair && docker compose down -v || true
 
-  # ---------- CONTAINER-DIFF (substituto image-inspector) ----------
+  # ---------- CONTAINER-DIFF ----------
   container-diff-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -588,8 +588,7 @@ jobs:
           checkov --version
       - name: 🔍 Run checkov on Dockerfile
         run: |
-          checkov -d . --framework dockerfile --output json > checkov-results.json
-        continue-on-error: true   # Não falha se encontrar problemas
+          checkov -d . --framework dockerfile --output json --soft-fail > checkov-results.json
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
         with:
