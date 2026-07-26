@@ -14,7 +14,7 @@ COPY src/main.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o main .
 
 # Stage final - imagem mínima
-FROM alpine:3.23.5
+FROM alpine:3.22
 
 # Instala apenas o necessário e configura usuário não-root
 RUN addgroup -g 1000 appuser && \
