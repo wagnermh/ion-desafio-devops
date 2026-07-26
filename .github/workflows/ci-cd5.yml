@@ -472,14 +472,12 @@ jobs:
 
       - name: 🐘 Start PostgreSQL and Clair servers
         run: |
-          # Inicia PostgreSQL
           docker run -d --name clair-postgres \
             -e POSTGRES_PASSWORD=password \
             -e POSTGRES_USER=clair \
             -e POSTGRES_DB=clair \
             postgres:13
 
-          # Inicia Clair conectando ao PostgreSQL
           docker run -d --name clair-server \
             --link clair-postgres:postgres \
             -p 6060:6060 \
@@ -585,47 +583,63 @@ jobs:
           path: container-diff.json
           retention-days: 7
 
-  # ---------- CHECKOV (USANDO ACTION OFICIAL) ----------
+  # ---------- CHECKOV (USANDO INSTALAÇÃO VIA PIP + JSON OUTPUT) ----------
   checkov-scan:
     needs: build-image
     runs-on: ubuntu-latest
     steps:
       - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
+
+      - name: 📦 Install Checkov
+        run: |
+          pip install checkov
+          checkov --version
+
       - name: 🔍 Run Checkov on Dockerfile
-        id: checkov
-        uses: bridgecrewio/checkov-action@v12.1347.0
-        with:
-          directory: .
-          framework: dockerfile
-          output_format: json
-          soft_fail: true
+        run: |
+          checkov -d . --framework dockerfile --output json --soft-fail > checkov-results.json
+
       - name: 📊 Generate Checkov report
         run: |
           echo "## 🛡️ Checkov Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f "results.json" ]; then
-            # Extrai contagens de falhas por severidade
-            CRITICAL=$(jq '[.results.failed_checks[]? | select(.severity=="CRITICAL")] | length' results.json || echo "0")
-            HIGH=$(jq '[.results.failed_checks[]? | select(.severity=="HIGH")] | length' results.json || echo "0")
-            MEDIUM=$(jq '[.results.failed_checks[]? | select(.severity=="MEDIUM")] | length' results.json || echo "0")
-            LOW=$(jq '[.results.failed_checks[]? | select(.severity=="LOW")] | length' results.json || echo "0")
-            TOTAL_FAILED=$(jq '.results.failed_checks | length' results.json || echo "0")
+          if [ -f "checkov-results.json" ]; then
+            # Extrai contagens do summary
+            PASSED=$(jq '.summary.passed' checkov-results.json || echo "0")
+            FAILED=$(jq '.summary.failed' checkov-results.json || echo "0")
+            SKIPPED=$(jq '.summary.skipped' checkov-results.json || echo "0")
+            TOTAL=$((PASSED + FAILED + SKIPPED))
+            
+            # Extrai falhas por severidade
+            CRITICAL=$(jq '[.results.failed_checks[]? | select(.severity=="CRITICAL")] | length' checkov-results.json || echo "0")
+            HIGH=$(jq '[.results.failed_checks[]? | select(.severity=="HIGH")] | length' checkov-results.json || echo "0")
+            MEDIUM=$(jq '[.results.failed_checks[]? | select(.severity=="MEDIUM")] | length' checkov-results.json || echo "0")
+            LOW=$(jq '[.results.failed_checks[]? | select(.severity=="LOW")] | length' checkov-results.json || echo "0")
+            
+            echo "| **Checks Summary** | |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------------------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| ✅ **Passed** | $PASSED |" >> $GITHUB_STEP_SUMMARY
+            echo "| ❌ **Failed** | $FAILED |" >> $GITHUB_STEP_SUMMARY
+            echo "| ⏭️ **Skipped** | $SKIPPED |" >> $GITHUB_STEP_SUMMARY
+            echo "| **Total** | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔴 Failed Checks by Severity" >> $GITHUB_STEP_SUMMARY
             echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| 🔴 **Critical** | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟠 **High** | $HIGH |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟡 **Medium** | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
             echo "| 🟢 **Low** | $LOW |" >> $GITHUB_STEP_SUMMARY
-            echo "**Total failed checks:** $TOTAL_FAILED" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ No results file found" >> $GITHUB_STEP_SUMMARY
           fi
+
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
         with:
           name: checkov-results
-          path: results.json
+          path: checkov-results.json
           retention-days: 7
         continue-on-error: true
 
