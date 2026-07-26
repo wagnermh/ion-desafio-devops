@@ -1,6 +1,6 @@
 name: Build and Deploy - v 5.0
 
-#on:
+on:
 #  push:
 #    branches: [ main ]
   workflow_dispatch:
