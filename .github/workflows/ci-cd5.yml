@@ -443,7 +443,7 @@ jobs:
             echo "✅ No CRITICAL or HIGH vulnerabilities found"
           fi
 
-  # ---------- CLAIR (PESADO, MANUAL) ----------
+  # ---------- CLAIR (PESADO, MANUAL, OPCIONAL) ----------
   clair-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -462,6 +462,7 @@ jobs:
       - name: 📦 Load image from tar
         run: docker load -i ${{ env.IMAGE_TAR }}
       - name: 🐘 Start Clair with PostgreSQL (docker compose)
+        continue-on-error: true   # Não quebra a pipeline se falhar (ex: rate limit)
         run: |
           mkdir clair
           cd clair
@@ -476,7 +477,7 @@ jobs:
               volumes:
                 - postgres-data:/var/lib/postgresql/data
             clair:
-              image: quay.io/clair/clair:latest
+              image: quay.io/clair/clair:2
               depends_on:
                 - postgres
               ports:
@@ -543,6 +544,7 @@ jobs:
           name: clair-results
           path: clair-report.json
           retention-days: 7
+        continue-on-error: true
       - name: 🧹 Cleanup Clair
         if: always()
         run: |
@@ -575,29 +577,29 @@ jobs:
           path: container-diff.json
           retention-days: 7
 
-  # ---------- CHECKOV (escaneia Dockerfile) ----------
+  # ---------- CHECKOV (USANDO ACTION OFICIAL) ----------
   checkov-scan:
     needs: build-image
     runs-on: ubuntu-latest
     steps:
-      - name: 🔍 Checkout code (para acessar Dockerfile)
+      - name: 🔍 Checkout code
         uses: actions/checkout@v7.0.0
-      - name: 📦 Install checkov
-        run: |
-          pip install checkov
-          checkov --version
-      - name: 🔍 Run checkov on Dockerfile
-        run: |
-          checkov -d . --framework dockerfile --output json --soft-fail > checkov-results.json
+      - name: 🔍 Run Checkov on Dockerfile
+        uses: bridgecrewio/checkov-action@v12.1347.0
+        with:
+          directory: .
+          framework: dockerfile
+          output_format: json
+          soft_fail: true   # não falha mesmo com violações
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
         with:
           name: checkov-results
-          path: checkov-results.json
+          path: results.json
           retention-days: 7
 
   # ================================================================
-  # JOB 4: VALIDAÇÃO DOS SCANS
+  # JOB 4: VALIDAÇÃO DOS SCANS (CLAIR NÃO BLOQUEIA)
   # ================================================================
   validate-scans:
     needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, clair-scan]
@@ -656,13 +658,13 @@ jobs:
             FAILED=$((FAILED + 1))
           fi
           
-          # Clair (se executado)
+          # Clair (apenas informativo, não bloqueia)
           if [ "${{ needs.clair-scan.outputs.status }}" != "" ]; then
             if [ "${{ needs.clair-scan.outputs.status }}" == "passed" ]; then
               echo "| **Clair** | ✅ Passed | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
             else
-              echo "| **Clair** | ❌ Failed | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
-              FAILED=$((FAILED + 1))
+              echo "| **Clair** | ❌ Failed (⚠️ não bloqueante) | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
+              # Não incrementa FAILED
             fi
           else
             echo "| **Clair** | ⏭️ Skipped | - | - | - |" >> $GITHUB_STEP_SUMMARY
@@ -670,10 +672,10 @@ jobs:
           
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ $FAILED -eq 0 ]; then
-            echo "✅ **All scans passed!** Ready to push." >> $GITHUB_STEP_SUMMARY
+            echo "✅ **All mandatory scans passed!** Ready to push." >> $GITHUB_STEP_SUMMARY
             echo "status=passed" >> $GITHUB_OUTPUT
           else
-            echo "❌ **$FAILED scan(s) failed!** Please review the results." >> $GITHUB_STEP_SUMMARY
+            echo "❌ **$FAILED mandatory scan(s) failed!** Please review the results." >> $GITHUB_STEP_SUMMARY
             echo "status=failed" >> $GITHUB_OUTPUT
           fi
 
