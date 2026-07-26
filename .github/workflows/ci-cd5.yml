@@ -1,9 +1,10 @@
-name: Build and Deploy -v 5.0
+name: Build and Deploy - v 5.0
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches:
+      - main
+  workflow_dispatch: {}
 
 env:
   IMAGE_NAME: ion-desafio-devops-app
