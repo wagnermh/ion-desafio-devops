@@ -464,11 +464,16 @@ jobs:
           name: docker-image-tar
           path: /tmp
 
+      - name: 📦 Copy tar to workspace
+        run: |
+          cp /tmp/image.tar ${{ github.workspace }}/image.tar
+          ls -lh ${{ github.workspace }}/image.tar
+
       - name: 🔍 Run Clair V4
         id: clair
         uses: quay/clair-action@main
         with:
-          image-path: ${{ env.IMAGE_TAR }}
+          image-path: ./image.tar
           format: sarif
           output: clair_results.sarif
           return-code: "0"   # Não falha se encontrar vulnerabilidades
@@ -478,10 +483,10 @@ jobs:
           echo "## 🔍 Clair Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f "clair_results.sarif" ]; then
-            # Extrai contagens do SARIF
-            CRITICAL=$(grep -o '"level":"error"' clair_results.sarif | wc -l || echo "0")
-            HIGH=$(grep -o '"level":"warning"' clair_results.sarif | wc -l || echo "0")
-            MEDIUM=$(grep -o '"level":"note"' clair_results.sarif | wc -l || echo "0")
+            # Extrai contagens usando jq (mais robusto)
+            CRITICAL=$(jq '[.runs[].results[]? | select(.level=="error")] | length' clair_results.sarif || echo "0")
+            HIGH=$(jq '[.runs[].results[]? | select(.level=="warning")] | length' clair_results.sarif || echo "0")
+            MEDIUM=$(jq '[.runs[].results[]? | select(.level=="note")] | length' clair_results.sarif || echo "0")
             echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
             echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
             echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
@@ -490,7 +495,6 @@ jobs:
             echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
             echo "high=$HIGH" >> $GITHUB_OUTPUT
             echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
-            # Clair não bloqueia - sempre passa
             echo "status=passed" >> $GITHUB_OUTPUT
           else
             echo "❌ Scan failed - no report" >> $GITHUB_STEP_SUMMARY
