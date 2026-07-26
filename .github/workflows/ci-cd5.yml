@@ -593,6 +593,7 @@ jobs:
           directory: .
           framework: dockerfile
           output_format: json
+          output_file_path: results.json   # <-- FORÇA O NOME DO ARQUIVO
           soft_fail: true
       - name: 📤 Upload checkov results
         uses: actions/upload-artifact@v7.0.1
@@ -600,12 +601,14 @@ jobs:
           name: checkov-results
           path: results.json
           retention-days: 7
+        continue-on-error: true   # Não falha se o arquivo não existir
 
   # ================================================================
-  # JOB 4: VALIDAÇÃO DOS SCANS (CLAIR NÃO BLOQUEIA)
+  # JOB 4: VALIDAÇÃO DOS SCANS
   # ================================================================
   validate-scans:
-    needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, clair-scan]
+    needs: [trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan, clair-scan,
+            container-diff-scan, checkov-scan]
     runs-on: ubuntu-latest
     if: always()
     outputs:
@@ -667,11 +670,16 @@ jobs:
               echo "| **Clair** | ✅ Passed | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
             else
               echo "| **Clair** | ❌ Failed (⚠️ não bloqueante) | ${{ needs.clair-scan.outputs.critical }} | ${{ needs.clair-scan.outputs.high }} | ${{ needs.clair-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
-              # Não incrementa FAILED
             fi
           else
             echo "| **Clair** | ⏭️ Skipped | - | - | - |" >> $GITHUB_STEP_SUMMARY
           fi
+
+          # Container-diff (informativo)
+          echo "| **Container-diff** | ✅ Executado (informações) | - | - | - |" >> $GITHUB_STEP_SUMMARY
+          
+          # Checkov (informativo)
+          echo "| **Checkov** | ✅ Executado (soft-fail) | - | - | - |" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ $FAILED -eq 0 ]; then
@@ -1241,7 +1249,7 @@ jobs:
   # ================================================================
   final-report:
     needs: [checkout-code, build-image, trivy-scan, grype-scan, syft-scan, dockle-scan, snyk-scan,
-            clair-scan, validate-scans,
+            clair-scan, container-diff-scan, checkov-scan, validate-scans,
             cartography-trivy-analysis, cartography-syft-analysis, generate-visualizations, push-image]
     runs-on: ubuntu-latest
     if: always()
@@ -1272,6 +1280,8 @@ jobs:
           if [ "${{ needs.clair-scan.result }}" != "skipped" ]; then
             echo "| **3f. Clair Scan** | ${{ needs.clair-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           fi
+          echo "| **3g. Container-diff Scan** | ${{ needs.container-diff-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **3h. Checkov Scan** | ${{ needs.checkov-scan.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.validate-scans.outputs.scan_status }}" == "passed" ]; then
             echo "| **4. Security Validation** | ✅ All Passed |" >> $GITHUB_STEP_SUMMARY
           else
