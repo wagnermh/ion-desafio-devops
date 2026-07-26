@@ -1,5 +1,7 @@
 name: Build and Deploy - v 2.0
 
+on:
+  workflow_dispatch:
 #on:
 #  push:
 #    branches: [ main ]
