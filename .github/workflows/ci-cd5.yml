@@ -583,7 +583,7 @@ jobs:
           path: container-diff.json
           retention-days: 7
 
-  # ---------- CHECKOV (COM OUTPUTS PARA CONSOLIDAÇÃO) ----------
+  # ---------- CHECKOV (COM EXTRAÇÃO CORRETA DE SEVERIDADES) ----------
   checkov-scan:
     needs: build-image
     runs-on: ubuntu-latest
@@ -619,7 +619,7 @@ jobs:
             SKIPPED=$(jq '.summary.skipped' checkov-results.json || echo "0")
             TOTAL=$((PASSED + FAILED + SKIPPED))
             
-            # Extrai falhas por severidade
+            # Extrai falhas por severidade (Checkov usa severity: "HIGH", "MEDIUM", "LOW")
             CRITICAL=$(jq '[.results.failed_checks[]? | select(.severity=="CRITICAL")] | length' checkov-results.json || echo "0")
             HIGH=$(jq '[.results.failed_checks[]? | select(.severity=="HIGH")] | length' checkov-results.json || echo "0")
             MEDIUM=$(jq '[.results.failed_checks[]? | select(.severity=="MEDIUM")] | length' checkov-results.json || echo "0")
@@ -741,7 +741,7 @@ jobs:
           # Container-diff (informativo)
           echo "| **Container-diff** | ✅ Executado (informações) | - | - | - |" >> $GITHUB_STEP_SUMMARY
           
-          # Checkov (com valores consolidados)
+          # Checkov (com valores consolidados - NÃO BLOQUEIA)
           echo "| **Checkov** | ✅ Executado (soft-fail) | ${{ needs.checkov-scan.outputs.critical }} | ${{ needs.checkov-scan.outputs.high }} | ${{ needs.checkov-scan.outputs.medium }} |" >> $GITHUB_STEP_SUMMARY
           
           echo "" >> $GITHUB_STEP_SUMMARY
